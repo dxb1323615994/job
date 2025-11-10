@@ -1,7 +1,7 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.entity.BossJobDataEntity;
-import com.getjobs.application.service.BossDataService;
+import com.getjobs.application.service.BossService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Arrays;
@@ -14,17 +14,17 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/boss")
 public class BossAnalyticsController {
 
-    private final BossDataService bossDataService;
+    private final BossService bossService;
 
-    public BossAnalyticsController(BossDataService bossDataService) {
-        this.bossDataService = bossDataService;
+    public BossAnalyticsController(BossService bossService) {
+        this.bossService = bossService;
     }
 
     /**
      * 投递分析统计与图表（支持与列表相同的筛选条件）
      */
     @GetMapping("/stats")
-    public BossDataService.StatsResponse getStats(
+    public BossService.StatsResponse getStats(
             @RequestParam(value = "statuses", required = false) String statuses,
             @RequestParam(value = "location", required = false) String location,
             @RequestParam(value = "experience", required = false) String experience,
@@ -41,7 +41,7 @@ public class BossAnalyticsController {
                     .filter(s -> !s.isEmpty())
                     .collect(Collectors.toList());
         }
-        return bossDataService.getBossStats(
+        return bossService.getBossStats(
                 statusList,
                 location,
                 experience,
@@ -57,7 +57,7 @@ public class BossAnalyticsController {
      * 岗位列表（分页 + 筛选）
      */
     @GetMapping("/list")
-    public BossDataService.PagedResult list(
+    public BossService.PagedResult list(
             @RequestParam(value = "statuses", required = false) String statuses,
             @RequestParam(value = "location", required = false) String location,
             @RequestParam(value = "experience", required = false) String experience,
@@ -76,7 +76,7 @@ public class BossAnalyticsController {
                     .filter(s -> !s.isEmpty())
                     .collect(Collectors.toList());
         }
-        return bossDataService.listBossJobs(
+        return bossService.listBossJobs(
                 statusList,
                 location,
                 experience,
@@ -95,6 +95,6 @@ public class BossAnalyticsController {
      */
     @GetMapping("/reload")
     public Map<String, Object> reload() {
-        return bossDataService.reloadBossData();
+        return bossService.reloadBossData();
     }
 }
