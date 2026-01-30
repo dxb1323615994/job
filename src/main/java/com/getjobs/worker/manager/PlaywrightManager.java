@@ -15,6 +15,9 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -92,6 +95,7 @@ public class PlaywrightManager {
     private static final String LIEPIN_DOMAIN = "liepin.com";
     private static final String JOB51_DOMAIN = "51job.com";
     private static final String ZHILIAN_DOMAIN = "zhaopin.com";
+    private static final String BOSS_INIT_SCRIPT_RESOURCE = "anti-detection.js";
     // 降噪：51job Cookie保存日志节流状态
     private volatile long last51CookieLogMs = 0L;
     private volatile int last51CookieLogCount = -1;
@@ -132,6 +136,7 @@ public class PlaywrightManager {
                     .setUserAgent(
                             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"));
             log.info("✓ BrowserContext已创建（所有平台共享）");
+            injectBossInitScript(context);
 
             // 顺序创建所有Page（避免并发创建Page导致的竞态条件）
             log.info("开始创建所有平台的Page...");
@@ -166,6 +171,34 @@ public class PlaywrightManager {
         } catch (Exception e) {
             log.error("✗ 浏览器自动化引擎初始化失败", e);
             throw new RuntimeException("Playwright初始化失败", e);
+        }
+    }
+
+    /**
+     * 在上下文层统一注入 Boss 脚本，仅对 zhipin.com 生效。
+     */
+    private void injectBossInitScript(BrowserContext targetContext) {
+        String script = readResourceText(BOSS_INIT_SCRIPT_RESOURCE);
+        if (script == null || script.isBlank()) {
+            log.warn("Boss 反检测脚本未加载，资源不存在或为空: {}", BOSS_INIT_SCRIPT_RESOURCE);
+            return;
+        }
+        String wrapped = "(function(){try{if(location&&location.origin===\"https://www.zhipin.com\"){"
+                + "if(window.__bossAntiDetectInjected){return;}window.__bossAntiDetectInjected=true;"
+                + script + "}}catch(e){}})();";
+        targetContext.addInitScript(wrapped);
+        log.info("Boss 反检测脚本已注入到Context: {}", BOSS_INIT_SCRIPT_RESOURCE);
+    }
+
+    private String readResourceText(String resourcePath) {
+        try (InputStream input = PlaywrightManager.class.getClassLoader().getResourceAsStream(resourcePath)) {
+            if (input == null) {
+                return null;
+            }
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            log.warn("读取资源失败: {} - {}", resourcePath, e.getMessage());
+            return null;
         }
     }
 
