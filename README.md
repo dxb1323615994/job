@@ -34,7 +34,7 @@
 - Github(国外访问)：https://github.com/loks666/get_jobs
 - Gitee·码云(中国大陆)：https://gitee.com/lok666/get_jobs
 
-### AI代理购买
+### AI代理暂时已停用，在联系解决中，未解决前请勿使用
 
 - https://api.ruyun.fun/ [**支持市面全部大模型！折扣比例2比1！1刀也可充，详情请联系站内客服**]
 
