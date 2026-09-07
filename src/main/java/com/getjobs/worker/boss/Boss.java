@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 
 import static com.getjobs.worker.boss.Locators.*;
@@ -59,6 +60,20 @@ public class Boss {
     private Supplier<Boolean> shouldStopCallback;
 
     private final List<Job> resultList = new ArrayList<>();
+
+    /** Boss 首页，UI 搜索的入口 */
+    private static final String BOSS_HOME_URL = "https://www.zhipin.com";
+    /**
+     * true=先回首页、在搜索框里做一次真实 UI 搜索再进列表页；false=直接拼 URL 跳转。
+     * <p>
+     * 默认关掉。实测 Boss 首页在受控标签页里会一直转圈加载不完，navigate 要 60 秒才返回，
+     * 期间 evaluate / locator 全部无限期阻塞（这两个 API 没有默认超时）—— 启动慢、投递卡死、
+     * 管理页面按钮没反应都出在这。而岗位列表页在同一个浏览器里是秒开的。
+     * 想重新试 UI 搜索路径时再打开。
+     */
+    private static final boolean USE_UI_SEARCH = false;
+    /** 等待页面加载状态的超时（毫秒），绝不能不设 —— 见 waitForPageSettled 的说明 */
+    private static final double LOAD_STATE_TIMEOUT = 10_000;
 
     /**
      * 进度回调接口
@@ -218,46 +233,84 @@ public class Boss {
             String encodedKeyword = URLEncoder.encode(keyword, StandardCharsets.UTF_8);
 
             String url = searchUrl + (searchUrl.contains("?") ? "&" : "?") + "query=" + encodedKeyword;
-            page.navigate(url, new Page.NavigateOptions()
-                    .setWaitUntil(com.microsoft.playwright.options.WaitUntilState.DOMCONTENTLOADED)
-                    .setTimeout(15_000));
-            // 等待列表容器出现，确保页面完成首屏渲染
-            page.waitForSelector("//ul[contains(@class, 'rec-job-list')]", new Page.WaitForSelectorOptions().setTimeout(60_000));
+            // 单个关键词失败不该让整个投递任务中止，下面整段都包在 try 里
+            try {
+            // 进列表页 + 等列表渲染，整段带重试
+            openJobListWithRetry(keyword, url, cityCode);
 
             // 1. 基于 footer 出现滚动到底，确保加载全部岗位
             int lastCount = -1;
             int stableTries = 0;
-            for (int i = 0; i < 5000; i++) { // 最多尝试约120次，避免死循环
+            int staleHits = 0;
+            // 上限 300 轮：原来写的是 5000，而且 stableTries 只触发强制触底、从不退出循环，
+            // 一旦 footer 选择器匹配不到就会空转几千轮，每轮一次 evaluate + count，
+            // 能把 playwright 线程占死几十分钟 —— 整个应用跟着卡住、投递任务也永远结束不了。
+            boolean loadedAll = false;
+            for (int i = 0; i < 300; i++) {
                 // 停止检查：滚动加载过程中也要及时响应
                 if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
                     progressCallback.accept("用户取消投递", 0, 0);
                     return;
                 }
-                Locator footer = page.locator("div#footer, #footer");
-                if (footer.count() > 0 && footer.first().isVisible()) {
-                    break; // 到达页面底部
-                }
-                // 按视口高度的90%渐进滚动，触发懒加载
-                page.evaluate("() => window.scrollBy(0, Math.floor(window.innerHeight * 1.5))");
+                // 滚动加载期间 Boss 会频繁增删 frame，Playwright 派发这些事件时可能
+                // 引用到已销毁的 frame（Object doesn't exist: frame@...），异常会顺着
+                // 当时在飞的那个调用抛出来。这类异常和调用本身无关，跳过这一轮继续滚就行。
+                try {
+                    // footer 可见不能立刻就当作"加载完了"：窗口最大化时首屏很短，
+                    // 第一轮 footer 就是可见的，会导致只拿到首屏 15 个岗位就退出
+                    // （实测同样的搜索条件，正常滚完是 300 个）。
+                    // 必须先滚一段、并且连着几轮没有新增岗位，footer 才算数。
+                    boolean footerVisible = false;
+                    Locator footer = page.locator("div#footer, #footer");
+                    if (footer.count() > 0 && footer.first().isVisible()) {
+                        footerVisible = true;
+                    }
+                    if (footerVisible && stableTries >= 2) {
+                        log.info("【{}】已滚动到底部且连续 {} 轮无新增，判定加载完毕", keyword, stableTries);
+                        loadedAll = true;
+                        break;
+                    }
+                    // 按视口高度的90%渐进滚动，触发懒加载
+                    page.evaluate("() => window.scrollBy(0, Math.floor(window.innerHeight * 1.5))");
 
-                // 获取卡片数量变化，判断是否需要强制触底
-                Locator cardsProbe = page.locator("//ul[contains(@class, 'rec-job-list')]//li[contains(@class, 'job-card-box')]");
-                int currentCount = cardsProbe.count();
-                if (currentCount == lastCount) {
-                    stableTries++;
-                } else {
-                    stableTries = 0;
-                }
-                lastCount = currentCount;
+                    // 获取卡片数量变化，判断是否需要强制触底
+                    Locator cardsProbe = page.locator("//ul[contains(@class, 'rec-job-list')]//li[contains(@class, 'job-card-box')]");
+                    int currentCount = cardsProbe.count();
+                    if (currentCount == lastCount) {
+                        stableTries++;
+                    } else {
+                        stableTries = 0;
+                    }
+                    lastCount = currentCount;
 
-                if (stableTries >= 3) { // 连续多次无新增，则强制触底一次
-                    page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
-                    // 触底不再等待，继续检测 footer 出现
+                    if (stableTries >= 3) { // 连续多次无新增，则强制触底一次
+                        page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
+                        // 触底不再等待，继续检测 footer 出现
+                    }
+                    // 强制触底之后仍然连着好几轮没有新岗位，就认定加载完了。
+                    // 不能只靠 footer —— Boss 有些版式根本没有 #footer，只等它就是死循环。
+                    if (stableTries >= 8) {
+                        log.info("【{}】连续 {} 轮没有新增岗位，判定已加载完毕", keyword, stableTries);
+                        loadedAll = true;
+                        break;
+                    }
+                } catch (Exception e) {
+                    if (!isStaleObjectError(e)) {
+                        throw e;
+                    }
+                    staleHits++;
+                    if (staleHits > 20) {
+                        log.warn("【{}】滚动期间反复出现失效对象异常({}次)，停止继续加载", keyword, staleHits);
+                        break;
+                    }
+                    PlaywrightUtil.sleep(1);
                 }
             }
+            if (!loadedAll) {
+                log.warn("【{}】滚动到达 300 轮上限仍未确认加载完毕，按当前已加载的岗位继续", keyword);
+            }
             // 统计最终岗位数量
-            Locator cardsFinal = page.locator("//ul[contains(@class, 'rec-job-list')]//li[contains(@class, 'job-card-box')]");
-            int loadedCount = cardsFinal.count();
+            int loadedCount = countJobCards();
             log.info("【{}】岗位已全部加载，总数:{}", keyword, loadedCount);
             progressCallback.accept("岗位加载完成：" + keyword, 0, loadedCount);
 
@@ -400,8 +453,27 @@ public class Boss {
                         PlaywrightUtil.sleep(1);
                     }
                 } catch (Throwable ignore) {}
+
+                // 按 wait_time 降速，别把风控刷出来
+                pauseBetweenJobs();
+
+                // 停顿期间可能已经被弹到安全验证页，发现了就停下来等人工过验证，
+                // 而不是继续闷头点下去（继续点只会让后面的关键词全部失败）
+                if (isSecurityVerifyUrl(safeUrl())) {
+                    log.warn("【{}】遍历过程中被跳转到安全验证页：{}", keyword, safeUrl());
+                    if (progressCallback != null) {
+                        progressCallback.accept("触发Boss安全校验，请在浏览器中手动完成验证", i + 1, count);
+                    }
+                    waitForSliderVerify(page);
+                }
             }
             log.info("【{}】岗位已投递完毕！已投递岗位数量:{}", keyword, postCount);
+            } catch (Exception e) {
+                log.error("【{}】处理失败，跳过该关键词继续下一个：{}", keyword, e.getMessage(), e);
+                if (progressCallback != null) {
+                    progressCallback.accept("关键词[" + keyword + "]失败已跳过：" + e.getMessage(), 0, 0);
+                }
+            }
         }
     }
 
@@ -603,6 +675,320 @@ public class Boss {
 
     private String getSearchUrl(String cityCode) {
         return buildSearchUrl(config, cityCode);
+    }
+
+    /**
+     * 进入岗位列表页。
+     * <p>
+     * 优先模拟真人路径：回首页 -> 在搜索框里逐字输入关键词 -> 点搜索按钮，
+     * 而不是冷启动直接把拼好的列表页 URL 丢给浏览器。
+     * <p>
+     * UI 搜索只能带上关键词和首页当前城市，config 里的城市/薪资/经验等筛选项仍然只能靠 URL，
+     * 所以落地之后如果条件对不上，会再做一次同标签页跳转 —— 此时已经是热会话 + 同源 referer，
+     * 和冷启动直闯不是一回事。UI 搜索任何一步失败都会退回原来的直接跳转，不影响主流程。
+     */
+    private void openJobList(String keyword, String targetUrl, String cityCode) {
+        boolean uiSearchDone = USE_UI_SEARCH && searchFromHomePage(keyword);
+        if (!uiSearchDone) {
+            navigateToJobList(targetUrl);
+        } else if (needsUrlFilters(targetUrl, cityCode)) {
+            log.info("【{}】UI搜索已落地，补充筛选条件跳转：{}", keyword, targetUrl);
+            navigateToJobList(targetUrl);
+        }
+        warnIfSecurityCheck(keyword);
+    }
+
+    /**
+     * 在 Boss 首页搜索框里做一次真实的 UI 搜索。
+     *
+     * @return 是否成功落到岗位列表页
+     */
+    private boolean searchFromHomePage(String keyword) {
+        try {
+            String current = page.url();
+            if (current == null || !current.startsWith(BOSS_HOME_URL) || current.contains("/web/geek/")) {
+                navigateTo(BOSS_HOME_URL);
+            }
+            // 首页落地后还会自己跳一次（/shanghai/?seoRefer=index 之类），
+            // 不等它跳完就找搜索框，会卡在 "waiting for navigation to finish" 直到超时
+            waitForPageSettled();
+
+            Locator input = page.locator(HOME_SEARCH_INPUT).first();
+            input.waitFor(new Locator.WaitForOptions().setTimeout(10_000));
+            input.click();
+            input.fill("");
+            // 逐字输入，模拟真人打字节奏；一次性 fill 在输入行为层面太干净了
+            input.pressSequentially(keyword, new Locator.PressSequentiallyOptions().setDelay(140));
+            PlaywrightUtil.sleep(1);
+
+            Locator searchBtn = page.locator(HOME_SEARCH_BUTTON).first();
+            if (searchBtn.count() > 0) {
+                searchBtn.click();
+            } else {
+                input.press("Enter");
+            }
+            // 表单提交是当前标签页跳转；若 Boss 改成新开标签页，这里会超时并退回直接跳转
+            page.waitForURL("**/web/geek/jobs**", new Page.WaitForURLOptions().setTimeout(15_000));
+            log.info("【{}】已通过首页搜索框进入岗位列表：{}", keyword, page.url());
+            return true;
+        } catch (Exception e) {
+            log.warn("【{}】首页UI搜索失败，退回直接跳转：{}", keyword, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * UI 搜索落地后，判断还需不需要用 URL 把筛选条件补上。
+     */
+    private boolean needsUrlFilters(String targetUrl, String cityCode) {
+        String landed = page.url();
+        if (landed == null) {
+            return true;
+        }
+        // 首页搜索用的是首页当前城市，不一定等于配置里的城市
+        if (cityCode != null && !cityCode.isEmpty() && !landed.contains("city=" + cityCode)) {
+            return true;
+        }
+        // 除 city/query 外还有别的筛选项（薪资、经验、学历……），UI 搜索带不上
+        int queryStart = targetUrl.indexOf('?');
+        if (queryStart < 0) {
+            return false;
+        }
+        for (String param : targetUrl.substring(queryStart + 1).split("&")) {
+            int eq = param.indexOf('=');
+            String name = eq < 0 ? param : param.substring(0, eq);
+            String value = eq < 0 ? "" : param.substring(eq + 1);
+            if (value.isEmpty() || "city".equals(name) || "query".equals(name)) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private void navigateToJobList(String url) {
+        navigateTo(url);
+    }
+
+    /**
+     * 导航并重试一次。
+     * <p>
+     * Boss 页面自己会做客户端跳转，撞上时 Playwright 报 net::ERR_ABORTED；
+     * 这类失败重试一次基本就过了，不该让整个投递任务因此中止。
+     */
+    private void navigateTo(String url) {
+        // Boss 的 SPA 在网络不佳或被限流时，15 秒常常不够，之前实测连着两次都超时
+        Page.NavigateOptions options = new Page.NavigateOptions()
+                .setWaitUntil(com.microsoft.playwright.options.WaitUntilState.DOMCONTENTLOADED)
+                .setTimeout(45_000);
+        try {
+            page.navigate(url, options);
+        } catch (Exception first) {
+            // 导航期间页面自己又跳了一次时，Playwright 会抛 "Object doesn't exist: request@/frame@"，
+            // 但页面其实已经到位了。先看落地 URL，别白白重试一遍。
+            if (landedOn(url)) {
+                log.debug("导航报了失效对象异常但页面已到位，忽略：{}", first.getMessage());
+                settleAfterNavigation();
+                return;
+            }
+            log.warn("导航失败，1秒后重试一次：{} | {}", url, first.getMessage());
+            PlaywrightUtil.sleep(1);
+            try {
+                page.navigate(url, options);
+            } catch (Exception second) {
+                if (!landedOn(url)) {
+                    throw second;
+                }
+                log.debug("重试同样报失效对象异常但页面已到位，忽略：{}", second.getMessage());
+            }
+        }
+        settleAfterNavigation();
+    }
+
+    /**
+     * 判断页面是否已经落在目标地址上（只比较路径，查询参数会被 Boss 改写）。
+     */
+    private boolean landedOn(String targetUrl) {
+        try {
+            String current = page.url();
+            if (current == null) {
+                return false;
+            }
+            String targetPath = targetUrl.split("\\?")[0];
+            return current.startsWith(targetPath);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 等页面真正稳定下来再继续。
+     * <p>
+     * DOMCONTENTLOADED 返回之后 Boss 还会自己做客户端跳转，此时 frame 被替换，
+     * 后续任何 locator 调用都会报 "Object doesn't exist: frame@..."。
+     */
+    private void settleAfterNavigation() {
+        waitForPageSettled();
+    }
+
+    /**
+     * 等页面进入 domcontentloaded，最多等 {@value #LOAD_STATE_TIMEOUT} 毫秒。
+     * <p>
+     * 两个坑都踩过了：
+     * 一是不能等 LOAD/NETWORKIDLE —— Boss 是 SPA + WebSocket 长连接，这两个状态可能永远不到；
+     * 二是必须显式给超时 —— 不给超时就是无限期挂起，而"卡住"不是异常，
+     * 外面包 try/catch 完全没用（实测把线程挂了两分钟以上还在等）。
+     */
+    private void waitForPageSettled() {
+        try {
+            page.waitForLoadState(com.microsoft.playwright.options.LoadState.DOMCONTENTLOADED,
+                    new Page.WaitForLoadStateOptions().setTimeout(LOAD_STATE_TIMEOUT));
+        } catch (Exception ignore) {
+            // 等不到就算了，后面的 locator 调用自己有超时
+        }
+        PlaywrightUtil.sleep(2);
+    }
+
+    /**
+     * 判断是不是 Playwright 的"对象已失效"异常。
+     * <p>
+     * 页面频繁增删 frame 时，Playwright Java 在派发事件时会引用到已经销毁的对象，
+     * 抛 "Object doesn't exist: frame@..."。这个异常和当时在飞的那个调用没有因果关系，
+     * 连接本身仍然可用，重试即可。
+     */
+    private static boolean isStaleObjectError(Throwable e) {
+        String message = e.getMessage();
+        if (message == null) {
+            return false;
+        }
+        // 两类都是"页面在动"导致的瞬时异常，跟调用本身没有因果关系，重试就好：
+        // - Object doesn't exist: frame@/request@  事件派发时引用到已销毁的对象
+        // - Execution context was destroyed         求值期间页面发生了导航
+        return message.contains("Object doesn't exist")
+                || message.contains("Execution context was destroyed");
+    }
+
+    /**
+     * 进入岗位列表并等列表渲染出来，整段带重试。
+     * Boss 首页/列表页在登录态下会连着跳好几次，一次失败很正常。
+     */
+    private void openJobListWithRetry(String keyword, String targetUrl, String cityCode) {
+        // 只重试一次：每次都要走导航(最长45秒×2) + 等列表(15秒×3)，
+        // 试三轮的话一个关键词失败要耗掉好几分钟，界面上看着就是"卡住不动"
+        RuntimeException last = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                openJobList(keyword, targetUrl, cityCode);
+                waitForJobList();
+                return;
+            } catch (RuntimeException e) {
+                last = e;
+                log.warn("【{}】进入岗位列表失败（第{}/2次）：{}", keyword, attempt,
+                        e.getMessage() == null ? e.toString() : e.getMessage().split("\n")[0]);
+                if (attempt < 2) {
+                    PlaywrightUtil.sleep(3);
+                }
+            }
+        }
+        throw last;
+    }
+
+    /**
+     * 统计当前列表里的岗位卡片数量，对失效对象异常做重试。
+     */
+    private int countJobCards() {
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                return page.locator(JOB_LIST_SELECTOR).count();
+            } catch (Exception e) {
+                if (!isStaleObjectError(e) || attempt == 3) {
+                    if (isStaleObjectError(e)) {
+                        log.warn("统计岗位数量始终失败，按 0 处理：{}", e.getMessage());
+                        return 0;
+                    }
+                    throw e;
+                }
+                PlaywrightUtil.sleep(1);
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * 等待岗位列表容器出现，带重试。
+     * 页面在这期间可能还在跳转，一次失败不代表真的没有列表。
+     */
+    private void waitForJobList() {
+        // Boss 改版频繁，推荐页和搜索结果页的容器类名不一样。
+        // 用逗号把候选选择器拼成一个，让 Playwright 一次性等"任意一个先出现"，
+        // 不要逐个 8 秒串行试 —— 那样一轮就要 48 秒，页面正常时也慢得像卡死。
+        String containers = String.join(", ",
+                "ul.rec-job-list",
+                "ul.job-list-box",
+                ".job-list-box",
+                ".search-job-result",
+                "li.job-card-box",
+                "li.job-card-wrapper");
+
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                page.waitForSelector(containers,
+                        new Page.WaitForSelectorOptions().setTimeout(15_000));
+                log.info("岗位列表容器已出现（第{}次尝试）", attempt);
+                return;
+            } catch (Exception e) {
+                log.warn("等待岗位列表失败（第{}/3次），当前页面: {}", attempt, safeUrl());
+                settleAfterNavigation();
+            }
+        }
+        dumpListPageStructure();
+        throw new IllegalStateException("岗位列表始终未出现，当前页面: " + safeUrl());
+    }
+
+    private String safeUrl() {
+        try {
+            return page.url();
+        } catch (Exception e) {
+            return "(取不到URL)";
+        }
+    }
+
+    /**
+     * 列表容器一个都没命中时，把页面上的候选列表结构打出来，方便修选择器。
+     */
+    private void dumpListPageStructure() {
+        try {
+            Object info = page.evaluate("""
+                    () => {
+                      const uls = Array.from(document.querySelectorAll('ul,div'))
+                        .filter(el => el.className && typeof el.className === 'string'
+                                   && /job|list|rec/i.test(el.className))
+                        .slice(0, 15)
+                        .map(el => el.tagName.toLowerCase() + '.' + el.className.trim().replace(/\\s+/g, '.')
+                                 + ' (children=' + el.childElementCount + ')');
+                      return { title: document.title, url: location.href, candidates: uls };
+                    }""");
+            log.warn("列表页结构快照: {}", info);
+        } catch (Exception e) {
+            log.warn("抓取列表页结构失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 落地后检查是否被弹到风控/验证页，日志里能直接看出是哪一步触发的。
+     */
+    private void warnIfSecurityCheck(String keyword) {
+        String url = page.url();
+        if (url == null) {
+            return;
+        }
+        if (isSecurityVerifyUrl(url)) {
+            log.warn("【{}】进入岗位列表时被跳转到验证页：{}", keyword, url);
+            if (progressCallback != null) {
+                progressCallback.accept("触发Boss安全校验，请手动完成验证", 0, 0);
+            }
+            waitForSliderVerify(page);
+        }
     }
 
     /**
@@ -1113,13 +1499,72 @@ public class Boss {
         return null;
     }
 
+    /** wait_time 没配或配得不合法时用的秒数 */
+    private static final int DEFAULT_WAIT_TIME_SECONDS = 10;
+
+    /**
+     * 取配置里的 wait_time（秒），非法值一律退回默认值。
+     */
+    private int resolveWaitTimeSeconds() {
+        try {
+            String raw = config == null ? null : config.getWaitTime();
+            if (raw != null && !raw.isBlank()) {
+                int parsed = Integer.parseInt(raw.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+            }
+        } catch (NumberFormatException ignored) {
+            // 配置里塞了非数字，用默认值
+        }
+        return DEFAULT_WAIT_TIME_SECONDS;
+    }
+
+    /**
+     * 每处理完一个岗位后的停顿。
+     * <p>
+     * 上一轮实测 7 分钟连刷 297 个岗位详情，直接把 Boss 风控触发了，
+     * 后续关键词全部被弹到安全验证页。这里按 wait_time 降速：
+     * 正常模式在 [wait_time/2, wait_time] 之间随机，避免固定节奏本身成为特征；
+     * 调试模式固定用最大值 wait_time，方便观察。
+     */
+    private void pauseBetweenJobs() {
+        int waitTime = resolveWaitTimeSeconds();
+        int seconds;
+        if (Boolean.TRUE.equals(config.getDebugger())) {
+            seconds = waitTime;
+        } else {
+            int min = Math.max(1, waitTime / 2);
+            seconds = min >= waitTime ? waitTime
+                    : ThreadLocalRandom.current().nextInt(min, waitTime + 1);
+        }
+        log.debug("岗位间停顿 {} 秒（wait_time={}，debugger={}）", seconds, waitTime, config.getDebugger());
+        PlaywrightUtil.sleep(seconds);
+    }
+
+    /**
+     * 判断是不是 Boss 的安全验证页。
+     * <p>
+     * 实测密集遍历后会被弹到 /web/passport/zp/verify.html（极验滑块，页面上是
+     * div.geetest_success_correct 那一套），而原来的判断只认 verify-slider，
+     * 导致真正遇到验证时程序把关键词当失败跳过，人也不知道要去过验证。
+     */
+    private static boolean isSecurityVerifyUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+        return url.contains("/web/user/safe/verify-slider")
+                || url.contains("/web/passport/zp/verify")
+                || url.contains("/web/passport/zp/security")
+                || url.contains("security-check");
+    }
+
     private void waitForSliderVerify(Page page) {
-        String SLIDER_URL = "https://www.zhipin.com/web/user/safe/verify-slider";
         // 最多等待5分钟（防呆，防止死循环）
         long start = System.currentTimeMillis();
         while (true) {
             String url = page.url();
-            if (url != null && url.startsWith(SLIDER_URL)) {
+            if (isSecurityVerifyUrl(url)) {
                 progressCallback.accept("请手动完成Boss直聘滑块验证，通过后在控制台回车继续...", 0, 0);
                 System.out.println("\n【滑块验证】请手动完成Boss直聘滑块验证，通过后在控制台回车继续…");
                 try {

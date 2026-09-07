@@ -33,6 +33,8 @@ public class BossJobService implements JobPlatformService {
     private volatile boolean isRunning = false;
     // 停止标志
     private volatile boolean shouldStop = false;
+    // 本次任务的开始时间（毫秒），用于判断任务是不是卡死了
+    private volatile long runningSince = 0L;
 
     @Override
     public void executeDelivery(Consumer<JobProgressMessage> progressCallback) {
@@ -42,6 +44,11 @@ public class BossJobService implements JobPlatformService {
         }
 
         try {
+            // 浏览器可能已经被关掉（手动关窗口 / Chrome 崩溃），这时各字段仍非空，
+            // 但每个操作都会抛 TargetClosedError。先确保浏览器可用，必要时重新拉起。
+            progressCallback.accept(JobProgressMessage.info(PLATFORM, "检查浏览器状态..."));
+            playwrightManager.ensureReady();
+
             // 获取Boss页面实例
             Page page = playwrightManager.getBossPage();
             if (page == null) {
@@ -58,6 +65,7 @@ public class BossJobService implements JobPlatformService {
             // 通过校验后再标记运行
             isRunning = true;
             shouldStop = false;
+            runningSince = System.currentTimeMillis();
 
             // 暂停后台登录监控，避免与投递流程并发访问同一Page
             playwrightManager.pauseBossMonitoring();
@@ -84,7 +92,10 @@ public class BossJobService implements JobPlatformService {
             boss.setShouldStopCallback(this::shouldStop);
             boss.prepare();
 
-            int deliveredCount = boss.execute();
+            // 整个投递流程必须跑在 Playwright 专用线程上。
+            // 原来跑在 ForkJoinPool 上，会和 scheduling-1 的登录监控同时操作同一条
+            // Playwright 连接，导航被打断报 net::ERR_ABORTED，整个任务直接挂掉。
+            int deliveredCount = playwrightManager.callOnPlaywright(boss::execute);
 
             progressCallback.accept(JobProgressMessage.success(PLATFORM,
                 String.format("投递任务完成，共发起%d个聊天", deliveredCount)));
@@ -94,6 +105,7 @@ public class BossJobService implements JobPlatformService {
         } finally {
             isRunning = false;
             shouldStop = false;
+            runningSince = 0L;
             // 恢复后台登录监控
             try {
                 playwrightManager.resumeBossMonitoring();
@@ -103,10 +115,44 @@ public class BossJobService implements JobPlatformService {
 
     @Override
     public void stopDelivery() {
-        if (isRunning) {
-            log.info("收到停止Boss投递任务的请求");
-            shouldStop = true;
+        if (!isRunning) {
+            return;
         }
+        log.info("收到停止Boss投递任务的请求");
+        shouldStop = true;
+
+        // shouldStop 只在投递流程的检查点生效；如果任务卡在某个 Playwright 调用里，
+        // 它永远看不到这个标志，isRunning 就会一直是 true，把"开始投递"永久堵死。
+        // 这里给它一段时间自行退出，超时就强制把状态复位，至少让界面能重新发起任务。
+        new Thread(() -> {
+            long deadline = System.currentTimeMillis() + FORCE_RESET_GRACE_MS;
+            while (isRunning && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            if (isRunning) {
+                log.warn("Boss投递任务在 {} 秒内未响应停止指令，强制复位运行状态（后台可能仍有残留操作）",
+                        FORCE_RESET_GRACE_MS / 1000);
+                isRunning = false;
+                runningSince = 0L;
+                try {
+                    playwrightManager.resumeBossMonitoring();
+                } catch (Exception ignored) {}
+            }
+        }, "boss-stop-watchdog").start();
+    }
+
+    /** 停止指令发出后，等待任务自行退出的宽限时间 */
+    private static final long FORCE_RESET_GRACE_MS = 15_000L;
+
+    /** 任务已经跑了多久（毫秒）；没在跑返回 0 */
+    public long runningForMillis() {
+        long since = runningSince;
+        return since == 0L ? 0L : System.currentTimeMillis() - since;
     }
 
     @Override

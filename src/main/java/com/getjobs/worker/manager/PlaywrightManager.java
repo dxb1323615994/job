@@ -1,6 +1,8 @@
 package com.getjobs.worker.manager;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.getjobs.application.entity.CookieEntity;
 import com.getjobs.application.service.CookieService;
 import com.microsoft.playwright.*;
@@ -18,13 +20,22 @@ import org.springframework.scheduling.annotation.Scheduled;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
+import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -42,8 +53,12 @@ public class PlaywrightManager {
     // Playwright实例
     private Playwright playwright;
 
-    // 浏览器实例（所有平台共享）
-    private Browser browser;
+    // 用持久化上下文启动后没有独立的 Browser 对象，context 本身就代表这个浏览器
+
+    // 浏览器是否已经关闭（用户手动关窗口、Chrome 崩溃等）。
+    // 不检测的话：字段还都非空，isInitialized() 依旧返回 true，
+    // 但任何页面操作都会抛 TargetClosedError，投递任务随即卡死、按钮再点毫无反应。
+    private volatile boolean browserClosed = false;
 
     // 浏览器上下文（所有平台共享，在同一个窗口中打开多个标签页）
     private BrowserContext context;
@@ -86,8 +101,29 @@ public class PlaywrightManager {
     // Playwright调试端口
     private static final int CDP_PORT = 7866;
 
+    // 登录状态探针的超时（毫秒）。探针失败只代表"没看到"，绝不能拖住主流程
+    private static final double LOCATOR_PROBE_TIMEOUT = 5000;
+
+    // waitForLoadState 的超时（毫秒）。
+    // Boss / 智联都是 SPA + WebSocket 长连接（cookie 里就有 ws.zhipin.com），
+    // NETWORKIDLE 可能永远等不到。不给超时会直接把线程挂死 —— 而且"卡住"不是异常，
+    // 外面包多少层 try/catch 都没用，实测把初始化卡了两分钟以上还在等。
+    private static final double LOAD_STATE_TIMEOUT = 10_000;
+
+    // Boss 登录态 Cookie：出现任意一个即视为已登录
+    private static final Set<String> BOSS_LOGIN_COOKIES = Set.of("bst", "wt2", "zp_at", "geek_zp_token");
+
+    // 持久化上下文的用户数据目录，登录态直接落在这里
+    private static final Path USER_DATA_DIR = Paths.get(System.getProperty("user.dir"), "browser-data");
+
     // 平台URL常量
     private static final String BOSS_URL = "https://www.zhipin.com";
+    // 初始化时打开的落地页。
+    // 不要用首页：实测 navigate("https://www.zhipin.com") 要 60 秒才回来，页面标签一直转圈，
+    // 期间任何 evaluate / locator 调用都会无限期阻塞（这两个 API 都没有默认超时），
+    // 表现就是启动奇慢、投递卡死、管理页面点按钮没反应。
+    // 岗位列表页在同一个浏览器里秒开，用它作为落地页。
+    private static final String BOSS_ENTRY_URL = "https://www.zhipin.com/web/geek/jobs";
     private static final String LIEPIN_URL = "https://www.liepin.com";
   private static final String JOB51_URL = "https://www.51job.com";
     private static final String ZHILIAN_URL = "https://www.zhaopin.com";
@@ -104,10 +140,155 @@ public class PlaywrightManager {
     @Autowired
     private CookieService cookieService;
 
+    // ------------------------------------------------------------------
+    // Playwright 单线程调度
+    //
+    // Playwright Java 不是线程安全的：Playwright 对象以及由它创建的所有对象，
+    // 都必须在创建它的那个线程上调用。这个项目原本同时从 main、ForkJoinPool、
+    // scheduling-1、http-nio 多个线程操作同一个 BrowserContext，会随机爆出
+    // "Object doesn't exist: request@/response@"，以及导航被打断的 net::ERR_ABORTED
+    // （投递任务因此整个挂掉）。
+    //
+    // 这里把所有 Playwright 调用收敛到一个专用线程上串行执行。
+    // ------------------------------------------------------------------
+    private static final String PW_THREAD_NAME = "playwright-thread";
+
+    private final ExecutorService playwrightExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, PW_THREAD_NAME);
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    // 排队中 + 执行中的任务数，给定时监控做"忙就跳过"判断，避免任务堆积
+    private final AtomicInteger playwrightQueueDepth = new AtomicInteger();
+
+    /** 当前是否已经在 Playwright 线程上（嵌套调用要就地执行，否则自己等自己会死锁） */
+    private boolean onPlaywrightThread() {
+        return PW_THREAD_NAME.equals(Thread.currentThread().getName());
+    }
+
     /**
-     * 初始化Playwright实例（延迟初始化）
+     * 在 Playwright 专用线程上执行并等待结果。已经在该线程上时就地执行。
+     */
+    public <T> T callOnPlaywright(Callable<T> task) {
+        if (onPlaywrightThread()) {
+            try {
+                return task.call();
+            } catch (Exception e) {
+                throw toRuntime(e);
+            }
+        }
+        playwrightQueueDepth.incrementAndGet();
+        try {
+            return playwrightExecutor.submit(() -> {
+                try {
+                    return task.call();
+                } finally {
+                    playwrightQueueDepth.decrementAndGet();
+                }
+            }).get();
+        } catch (ExecutionException e) {
+            throw toRuntime(e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("等待Playwright任务被中断", e);
+        }
+    }
+
+    /**
+     * 在 Playwright 专用线程上执行并等待完成。
+     */
+    public void runOnPlaywright(Runnable task) {
+        callOnPlaywright(() -> {
+            task.run();
+            return null;
+        });
+    }
+
+    /**
+     * 给定时监控用：Playwright 线程正忙（比如正在跑投递）时直接跳过这一轮，
+     * 不排队、不阻塞调度线程。
+     *
+     * @return 是否真的提交了任务
+     */
+    public boolean tryRunOnPlaywright(Runnable task) {
+        if (playwrightQueueDepth.get() > 0) {
+            return false;
+        }
+        playwrightQueueDepth.incrementAndGet();
+        playwrightExecutor.execute(() -> {
+            try {
+                task.run();
+            } catch (Exception e) {
+                log.debug("Playwright后台任务异常: {}", e.getMessage());
+            } finally {
+                playwrightQueueDepth.decrementAndGet();
+            }
+        });
+        return true;
+    }
+
+    /**
+     * 把持久化 profile 里的"上次崩溃退出"标记改回正常。
+     * <p>
+     * 应用被强制停止（IDEA 的停止按钮、kill、崩溃）后，Chrome 下次启动会弹
+     * "要恢复页面吗？"模态框。这个框会挂起所有 CDP 页面操作 —— 表现为 navigate
+     * 永远不返回而且连超时都不触发，整个初始化线程焊死。
+     * 除了命令行标志，这里再把 Preferences 里的退出状态直接改掉。
+     */
+    private void sanitizeProfileExitState() {
+        Path preferences = USER_DATA_DIR.resolve("Default").resolve("Preferences");
+        if (!Files.isRegularFile(preferences)) {
+            return;
+        }
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(preferences.toFile());
+            if (!(root instanceof ObjectNode rootNode)) {
+                return;
+            }
+            JsonNode profile = rootNode.get("profile");
+            if (!(profile instanceof ObjectNode profileNode)) {
+                return;
+            }
+            String exitType = profileNode.path("exit_type").asText("");
+            boolean exitedCleanly = profileNode.path("exited_cleanly").asBoolean(true);
+            if ("Normal".equals(exitType) && exitedCleanly) {
+                return;
+            }
+            profileNode.put("exit_type", "Normal");
+            profileNode.put("exited_cleanly", true);
+            mapper.writeValue(preferences.toFile(), rootNode);
+            log.info("已清除浏览器 profile 的崩溃退出标记（原 exit_type={}），避免弹出\"要恢复页面吗？\"", exitType);
+        } catch (Exception e) {
+            log.warn("清理 profile 退出状态失败（不影响启动）: {}", e.getMessage());
+        }
+    }
+
+    /** Playwright 线程上是否有前台任务在跑（投递、初始化等） */
+    public boolean isPlaywrightBusy() {
+        return playwrightQueueDepth.get() > 0;
+    }
+
+    private static RuntimeException toRuntime(Throwable throwable) {
+        if (throwable instanceof RuntimeException runtimeException) {
+            return runtimeException;
+        }
+        return new RuntimeException(throwable);
+    }
+
+    /**
+     * 初始化Playwright实例（延迟初始化）。
+     * Playwright 对象必须在专用线程上创建，否则后续所有调用都得跨线程。
      */
     public void init() {
+        if (isInitialized()) {
+            return;
+        }
+        runOnPlaywright(this::initInternal);
+    }
+
+    private void initInternal() {
         if (isInitialized()) {
             return;
         }
@@ -116,30 +297,65 @@ public class PlaywrightManager {
         log.info("========================================");
 
         try {
-            // 启动Playwright
-            playwright = Playwright.create();
-            log.info("✓ Playwright引擎已启动");
+            // 启动Playwright，driver 指向 patchright（见 build.gradle.kts 的 installPatchrightDriver）
+            playwright = createPlaywright();
+            log.info("✓ Playwright引擎已启动 (driver: {})", describeDriver());
 
-            // 创建浏览器实例，使用固定CDP端口7866，最大化启动
-            browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
-                    .setHeadless(false) // 非无头模式，可视化调试
-                    .setSlowMo(50) // 放慢操作速度，便于调试
-                    .setArgs(List.of(
-                            "--remote-debugging-port=" + CDP_PORT, // 使用固定CDP端口
-                            "--start-maximized" // 最大化启动窗口
-                    )));
-            log.info("✓ Chrome浏览器已启动 (调试端口: {})", CDP_PORT);
+            // 清掉上次的"崩溃退出"标记，双保险（命令行标志偶尔不生效）
+            sanitizeProfileExitState();
 
-            // 创建共享的BrowserContext（所有平台在同一个窗口的不同标签页中）
-            context = browser.newContext(new Browser.NewContextOptions()
-                    .setViewportSize(null) // 不设置固定视口，使用浏览器窗口实际大小
-                    .setUserAgent(
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"));
+            // 用持久化上下文启动：Patchright 官方明确要求用 launchPersistentContext，
+            // 而不是 launch() + newContext()。登录态直接落盘到 USER_DATA_DIR。
+            context = playwright.chromium().launchPersistentContext(USER_DATA_DIR,
+                    new BrowserType.LaunchPersistentContextOptions()
+                            .setChannel("chrome")   // 用本机真实 Chrome，而不是 Chromium
+                            .setHeadless(false)     // 无头必被检测
+                            .setSlowMo(50)          // 放慢操作速度，便于调试
+                            .setViewportSize(null)  // 不锁视口，用窗口实际大小
+                            .setChromiumSandbox(true) // 不加 --no-sandbox：它本身就是自动化特征
+                            .setArgs(List.of(
+                                    "--start-maximized",
+                                    // Patchright 会加 --disable-blink-features=AutomationControlled，
+                                    // Chrome 因此弹"不受支持的命令行标记"黄条，用 --test-type 抑制
+                                    "--test-type",
+                                    // 上次非正常退出（IDEA 停止按钮、崩溃、kill）后，Chrome 会弹
+                                    // "要恢复页面吗？"模态框。那个框会挂起所有 CDP 页面操作，
+                                    // 表现为 navigate 永远不返回、连超时都不触发，整个初始化焊死。
+                                    "--disable-session-crashed-bubble",
+                                    "--hide-crash-restore-bubble",
+                                    "--no-first-run",
+                                    "--no-default-browser-check",
+                                    // 强制直连，不走系统代理（代理出口 IP 更容易被风控标记）
+                                    "--no-proxy-server",
+                                    "--proxy-bypass-list=*",
+                                    // 把 navigator.webdriver 压成 false。
+                                    // patchright 的 driver 会自动加这个标志，但它的超时机制是坏的
+                                    // （navigate/isVisible/waitForLoadState 的 timeout 全部失效，
+                                    // 会把线程无限期挂死）；用官方 driver 就得自己加。
+                                    "--disable-blink-features=AutomationControlled"
+                            )));
+            // 刻意不设置 UserAgent：伪造 UA 只改字符串，改不了 navigator.platform 和
+            // navigator.userAgentData，反而制造出"UA 说 Mac、platform 说 Win32"这种致命矛盾。
+            browserClosed = false;
+            // 浏览器一旦关闭（手动关窗口 / Chrome 崩溃）立刻置位，
+            // 让 isInitialized() 变 false，后续操作走重新初始化而不是一路 TargetClosedError
+            context.onClose(closed -> {
+                browserClosed = true;
+                log.warn("检测到浏览器已关闭，下次操作会自动重新初始化");
+            });
+            log.info("✓ Chrome已启动（持久化上下文: {}）", USER_DATA_DIR);
             log.info("✓ BrowserContext已创建（所有平台共享）");
-            injectBossInitScript(context);
 
             // 顺序创建所有Page（避免并发创建Page导致的竞态条件）
             log.info("开始创建所有平台的Page...");
+
+            // 持久化上下文自带的那个启动标签页不能复用！
+            // 复用它会出现：标签页永远停在加载中（左上角一直转圈），而 page.evaluate /
+            // locator 这些调用没有默认超时，于是无限期阻塞 —— 实测卡 160 秒还不返回，
+            // 表现就是初始化奇慢、投递任务卡死、整个应用发卡。
+            // 同一个浏览器里新开的标签页则完全正常，所以这里一律新建，最后把启动页关掉。
+            List<Page> startupPages = new ArrayList<>(context.pages());
+
             bossPage = context.newPage();
             bossPage.setDefaultTimeout(DEFAULT_TIMEOUT);
             log.info("✓ Boss Page已创建");
@@ -156,17 +372,27 @@ public class PlaywrightManager {
             zhilianPage.setDefaultTimeout(DEFAULT_TIMEOUT);
             log.info("✓ 智联招聘 Page已创建");
 
-            // 并发执行各平台的初始化逻辑（导航、Cookie加载等）
-            log.info("开始并发初始化所有平台...");
-            CompletableFuture<Void> bossFuture = CompletableFuture.runAsync(this::setupBossPlatform);
-            CompletableFuture<Void> liepinFuture = CompletableFuture.runAsync(this::setupLiepinPlatform);
-            CompletableFuture<Void> job51Future = CompletableFuture.runAsync(this::setup51jobPlatform);
-            CompletableFuture<Void> zhilianFuture = CompletableFuture.runAsync(this::setupZhilianPlatform);
+            // 四个业务页都建好了，把持久化上下文自带的启动空白页关掉
+            for (Page startup : startupPages) {
+                try {
+                    startup.close();
+                } catch (Exception e) {
+                    log.debug("关闭启动空白页失败（忽略）: {}", e.getMessage());
+                }
+            }
+            if (!startupPages.isEmpty()) {
+                log.info("✓ 已关闭 {} 个启动空白页", startupPages.size());
+            }
 
-            // 等待所有平台初始化完成
-            CompletableFuture.allOf(bossFuture, liepinFuture, job51Future, zhilianFuture).join();
+            // 各平台初始化必须串行：它们共享同一个 BrowserContext 和同一条 Playwright 连接，
+            // 原来用 4 个 ForkJoinPool 线程并发跑，会互相打断导航（net::ERR_ABORTED）
+            log.info("开始依次初始化所有平台...");
+            setupBossPlatform();
+            setupLiepinPlatform();
+            setup51jobPlatform();
+            setupZhilianPlatform();
 
-            log.info("✓ 浏览器自动化引擎初始化完成（所有平台已并发启动）");
+            log.info("✓ 浏览器自动化引擎初始化完成（所有平台已依次启动）");
             log.info("========================================");
         } catch (Exception e) {
             log.error("✗ 浏览器自动化引擎初始化失败", e);
@@ -175,19 +401,94 @@ public class PlaywrightManager {
     }
 
     /**
-     * 在上下文层统一注入 Boss 脚本，仅对 zhipin.com 生效。
+     * 创建 Playwright 实例，并把 driver 指向 patchright。
+     * <p>
+     * 不能只靠 gradle bootRun 传 -Dplaywright.cli.dir —— 从 IDEA 直接跑 main() 时不走那套配置，
+     * 会静默退回官方 driver-bundle，反检测全部失效。所以这里自己找一遍，
+     * 保证不管用什么方式启动，跑的都是 patchright。
      */
-    private void injectBossInitScript(BrowserContext targetContext) {
-        String script = readResourceText(BOSS_INIT_SCRIPT_RESOURCE);
-        if (script == null || script.isBlank()) {
-            log.warn("Boss 反检测脚本未加载，资源不存在或为空: {}", BOSS_INIT_SCRIPT_RESOURCE);
-            return;
+    private Playwright createPlaywright() {
+        if (System.getProperty("playwright.cli.dir") == null) {
+            Path driverDir = locatePatchrightDriver();
+            if (driverDir != null) {
+                System.setProperty("playwright.cli.dir", driverDir.toString());
+            } else {
+                log.warn("未找到 patchright driver，将退回官方 driver-bundle（反检测能力大幅下降）。"
+                        + "请先执行: gradlew installPatchrightDriver");
+            }
         }
-        String wrapped = "(function(){try{if(location&&location.origin===\"https://www.zhipin.com\"){"
-                + "if(window.__bossAntiDetectInjected){return;}window.__bossAntiDetectInjected=true;"
-                + script + "}}catch(e){}})();";
-        targetContext.addInitScript(wrapped);
-        log.info("Boss 反检测脚本已注入到Context: {}", BOSS_INIT_SCRIPT_RESOURCE);
+
+        Map<String, String> env = new HashMap<>();
+        // patchright driver 目录里没有 node，得用本机的
+        if (System.getProperty("playwright.cli.dir") != null && System.getenv("PLAYWRIGHT_NODEJS_PATH") == null) {
+            String nodePath = locateNodeExecutable();
+            if (nodePath != null) {
+                env.put("PLAYWRIGHT_NODEJS_PATH", nodePath);
+                log.info("使用本机 node: {}", nodePath);
+            } else {
+                log.warn("PATH 里没找到 node，patchright driver 可能起不来，请先安装 Node.js");
+            }
+        }
+
+        return env.isEmpty()
+                ? Playwright.create()
+                : Playwright.create(new Playwright.CreateOptions().setEnv(env));
+    }
+
+    /**
+     * 找 patchright driver 目录，判定标准是里面有 package/cli.js。
+     */
+    private Path locatePatchrightDriver() {
+        Path projectDir = Paths.get(System.getProperty("user.dir"));
+        List<Path> candidates = List.of(
+                projectDir.resolve("build").resolve("patchright-driver"),
+                projectDir.resolve("patchright-driver"),
+                // 从子目录启动时往上找一级
+                projectDir.getParent() == null ? projectDir
+                        : projectDir.getParent().resolve("build").resolve("patchright-driver"));
+        for (Path candidate : candidates) {
+            if (Files.isRegularFile(candidate.resolve("package").resolve("cli.js"))) {
+                return candidate.toAbsolutePath();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从 PATH 里找 node 可执行文件。
+     */
+    private String locateNodeExecutable() {
+        boolean windows = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("windows");
+        String exe = windows ? "node.exe" : "node";
+        String path = System.getenv("PATH");
+        if (path == null) {
+            return null;
+        }
+        for (String entry : path.split(java.io.File.pathSeparator)) {
+            if (entry == null || entry.isBlank()) {
+                continue;
+            }
+            try {
+                Path candidate = Paths.get(entry.trim()).resolve(exe);
+                if (Files.isRegularFile(candidate)) {
+                    return candidate.toAbsolutePath().toString();
+                }
+            } catch (Exception ignore) {
+                // PATH 里可能有非法路径，跳过
+            }
+        }
+        return null;
+    }
+
+    /**
+     * driver 来源说明，仅用于启动日志，方便确认到底跑的是不是 patchright。
+     */
+    private String describeDriver() {
+        String cliDir = System.getProperty("playwright.cli.dir");
+        if (cliDir == null || cliDir.isBlank()) {
+            return "官方 driver-bundle（没找到 patchright，反检测能力下降）";
+        }
+        return "patchright @ " + cliDir;
     }
 
     private String readResourceText(String resourcePath) {
@@ -232,7 +533,7 @@ public class PlaywrightManager {
         boolean navigateSuccess = false;
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                bossPage.navigate(BOSS_URL, new Page.NavigateOptions()
+                bossPage.navigate(BOSS_ENTRY_URL, new Page.NavigateOptions()
                         .setTimeout(60000)
                         .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
                 navigateSuccess = true;
@@ -268,7 +569,7 @@ public class PlaywrightManager {
         try {
             // 等待页面网络空闲，确保头部导航渲染完成
             try {
-                bossPage.waitForLoadState(LoadState.NETWORKIDLE);
+                bossPage.waitForLoadState(LoadState.NETWORKIDLE, new Page.WaitForLoadStateOptions().setTimeout(LOAD_STATE_TIMEOUT));
             } catch (Exception e) {
                 log.debug("等待Boss页面网络空闲失败: {}", e.getMessage());
             }
@@ -288,10 +589,22 @@ public class PlaywrightManager {
      * 检查Boss是否已登录
      */
     private boolean checkIfLoggedIn() {
+        // 最可靠的信号是登录态 Cookie：不受页面渲染、跳转、加载速度影响。
+        // DOM 探测（头像、登录入口）只作兜底 —— 页面一慢就会误判成未登录，
+        // 而 /api/boss/start 是拿这个结果做准入的，误判会直接导致"请先登录"。
+        try {
+            for (Cookie cookie : context.cookies(BOSS_URL)) {
+                if (BOSS_LOGIN_COOKIES.contains(cookie.name)
+                        && cookie.value != null && !cookie.value.isBlank()) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {}
+
         // 更稳健的登录判断：优先检测用户头像/昵称是否可见；备用检测登录入口是否可见且包含“登录”文本
         try {
             Locator userLabel = bossPage.locator("li.nav-figure span.label-text").first();
-            if (userLabel.isVisible()) {
+            if (isVisibleQuick(userLabel)) {
                 return true;
             }
         } catch (Exception ignored) {}
@@ -299,7 +612,7 @@ public class PlaywrightManager {
         try {
             // 有些版本仅展示头像入口，无 label-text
             Locator navFigure = bossPage.locator("li.nav-figure").first();
-            if (navFigure.isVisible()) {
+            if (isVisibleQuick(navFigure)) {
                 return true;
             }
         } catch (Exception ignored) {}
@@ -307,8 +620,8 @@ public class PlaywrightManager {
         try {
             // 未登录时通常有“登录/注册”入口或按钮容器
             Locator loginAnchor = bossPage.locator("li.nav-sign a, .btns").first();
-            if (loginAnchor.isVisible()) {
-                String text = loginAnchor.textContent();
+            if (isVisibleQuick(loginAnchor)) {
+                String text = loginAnchor.textContent(new Locator.TextContentOptions().setTimeout(LOCATOR_PROBE_TIMEOUT));
                 if (text != null && text.contains("登录")) {
                     return false;
                 }
@@ -320,6 +633,21 @@ public class PlaywrightManager {
     }
 
     /**
+     * 带超时的可见性探测。
+     * <p>
+     * 不能直接用 Locator.isVisible()：Boss 首页会连续做客户端跳转，
+     * 期间 frame 反复重建，这个调用会一直等下去（实测把初始化线程焊死了 2 分钟以上都不返回）。
+     * 登录检测只是个探针，等不到就当作"没看到"，绝不能阻塞主流程。
+     */
+    private boolean isVisibleQuick(Locator locator) {
+        try {
+            return locator.isVisible(new Locator.IsVisibleOptions().setTimeout(LOCATOR_PROBE_TIMEOUT));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * 设置登录状态监控
      *
      * @param page 页面实例
@@ -328,8 +656,9 @@ public class PlaywrightManager {
         // 监听页面导航事件，检测URL变化
         page.onFrameNavigated(frame -> {
             if (frame == page.mainFrame()) {
-                // 事件触发的检查在Playwright内部线程执行，仍需遵守暂停标志
-                if (!bossMonitoringPaused) {
+                // 事件回调是在别的调用"进行中"被派发的，此时再去调 Playwright 属于重入，
+                // 会打断正在进行的导航。所以除了暂停标志，还要避开前台任务运行期。
+                if (!bossMonitoringPaused && !isPlaywrightBusy()) {
                     checkLoginStatus(page, "boss");
                 }
             }
@@ -404,7 +733,7 @@ public class PlaywrightManager {
 
         // 等待页面网络空闲，确保头部导航渲染完成
         try {
-            liepinPage.waitForLoadState(LoadState.NETWORKIDLE);
+            liepinPage.waitForLoadState(LoadState.NETWORKIDLE, new Page.WaitForLoadStateOptions().setTimeout(LOAD_STATE_TIMEOUT));
         } catch (Exception e) {
             log.debug("等待猎聘页面网络空闲失败: {}", e.getMessage());
         }
@@ -426,7 +755,7 @@ public class PlaywrightManager {
             try {
                 Locator loginEntry = liepinPage.locator(
                     "#header-quick-menu-login, a[href*='login'], a[data-key='login'], button[data-key='login'], text=/登录|注册/").first();
-                if (loginEntry.isVisible()) {
+                if (isVisibleQuick(loginEntry)) {
                     log.info("检测到未登录猎聘，保持在登录页或首页等待扫码登录");
                     // 若不在登录页，则导航到登录页并尝试切换二维码
                     String currentUrl = null;
@@ -438,20 +767,20 @@ public class PlaywrightManager {
                         }
                         // 优先点击官方切换二维码的容器
                         Locator qrSwitch = liepinPage.locator(".switch-type-mask-img-box").first();
-                        if (qrSwitch.isVisible()) {
+                        if (isVisibleQuick(qrSwitch)) {
                             qrSwitch.click();
                             log.info("已切换到猎聘二维码登录页面，等待用户扫码...");
                         } else {
                             // 兼容新版页面：图片资源名包含 qrcode-btn，需要点击其父级按钮
                             Locator qrImg = liepinPage.locator("img[src*='qrcode-btn']").first();
-                            if (qrImg.count() > 0 && qrImg.isVisible()) {
+                            if (qrImg.count() > 0 && isVisibleQuick(qrImg)) {
                                 try {
                                     // 尝试点击父节点或最近的可点击容器
                                     qrImg.click();
                                 } catch (Exception ignored) {
                                     try {
                                         Locator parentBtn = qrImg.locator("xpath=ancestor::button[1] | xpath=ancestor::*[contains(@class,'btn')][1]").first();
-                                        if (parentBtn.count() > 0 && parentBtn.isVisible()) {
+                                        if (parentBtn.count() > 0 && isVisibleQuick(parentBtn)) {
                                             parentBtn.click();
                                         }
                                     } catch (Exception ignored2) {}
@@ -589,14 +918,14 @@ public class PlaywrightManager {
                 try {
                     // 优先使用用户提供的选择器：span.login.loginBtnClick
                     Locator loginEntry = job51Page.locator("span.login.loginBtnClick").first();
-                    if (loginEntry != null && loginEntry.isVisible()) {
+                    if (loginEntry != null && isVisibleQuick(loginEntry)) {
                         loginEntry.click(new Locator.ClickOptions().setTimeout(30000));
                         log.info("已点击 51job 首页的 ‘登录/注册’ 入口，等待用户登录...");
                         asyncWaitFor51jobLogin();
                     } else {
                         // 备用选择器：文本匹配
                         Locator altLoginEntry = job51Page.locator("text=/登录\\/注册|登录|注册/").first();
-                        if (altLoginEntry != null && altLoginEntry.isVisible()) {
+                        if (altLoginEntry != null && isVisibleQuick(altLoginEntry)) {
                             altLoginEntry.click(new Locator.ClickOptions().setTimeout(30000));
                             log.info("已点击 51job 首页的登录入口（文本匹配），等待用户登录...");
                             asyncWaitFor51jobLogin();
@@ -631,7 +960,7 @@ public class PlaywrightManager {
       try {
             // 未登录特征：存在“登录/注册”入口
             Locator loginBtn = job51Page.locator("span.login.loginBtnClick").first();
-            if (loginBtn.isVisible()) {
+            if (isVisibleQuick(loginBtn)) {
                 String txt = (loginBtn.textContent() == null ? "" : loginBtn.textContent()).trim();
                 if (txt.contains("登录")) {
                     return false;
@@ -640,12 +969,12 @@ public class PlaywrightManager {
             // 已登录特征（增强）：顶部显示用户名入口或个人中心链接
             // 1) 明确的用户名锚点（类名：uname e_icon at）
             Locator userAnchor = job51Page.locator("a.uname.e_icon.at");
-            if (userAnchor.count() > 0 && userAnchor.first().isVisible()) {
+            if (userAnchor.count() > 0 && isVisibleQuick(userAnchor.first())) {
                 return true;
             }
             // 2) 个人中心链接（href=/pc/my/myjob）
             Locator myJobLink = job51Page.locator("a[href*='/pc/my/myjob']");
-            if (myJobLink.count() > 0 && myJobLink.first().isVisible()) {
+            if (myJobLink.count() > 0 && isVisibleQuick(myJobLink.first())) {
                 return true;
             }
             // 3) 其他可能的用户信息容器（旧的兜底选择器）
@@ -840,7 +1169,7 @@ public class PlaywrightManager {
                     .setTimeout(60000)
                     .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
                 Locator loginEntry = job51Page.locator("span.login.loginBtnClick, text=/登录\\/注册|登录|注册/").first();
-                if (loginEntry.isVisible()) {
+                if (isVisibleQuick(loginEntry)) {
                     loginEntry.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
                 }
             } catch (Exception e) {
@@ -860,7 +1189,7 @@ public class PlaywrightManager {
                 "[data-sensor-id='sensor_login_wechatScan']"
             ).first();
 
-            if (wechatScanBtn.isVisible()) {
+            if (isVisibleQuick(wechatScanBtn)) {
                 wechatScanBtn.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
                 log.info("已点击51job登录页的微信扫码按钮，等待用户扫码登录...");
             } else {
@@ -940,7 +1269,7 @@ public class PlaywrightManager {
 
         // 等待页面加载完成
         try {
-            zhilianPage.waitForLoadState(LoadState.NETWORKIDLE);
+            zhilianPage.waitForLoadState(LoadState.NETWORKIDLE, new Page.WaitForLoadStateOptions().setTimeout(LOAD_STATE_TIMEOUT));
         } catch (Exception e) {
             log.debug("等待智联页面网络空闲失败: {}", e.getMessage());
         }
@@ -1025,7 +1354,7 @@ public class PlaywrightManager {
 
                             if (loginNavOk) {
                                 try {
-                                    zhilianPage.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                                    zhilianPage.waitForLoadState(LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(LOAD_STATE_TIMEOUT));
                                 } catch (Exception ignored) {}
                                 try {
                                     zhilianPage.waitForSelector(
@@ -1042,7 +1371,7 @@ public class PlaywrightManager {
 
                         // 点击二维码登录按钮
                         Locator qrToggle = zhilianPage.locator("div.zppp-panel-normal-bar__img").first();
-                        if (qrToggle.count() > 0 && qrToggle.isVisible()) {
+                        if (qrToggle.count() > 0 && isVisibleQuick(qrToggle)) {
                             qrToggle.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
                             log.info("已切换到智联二维码登录页面，等待用户扫码...");
                         } else {
@@ -1131,9 +1460,9 @@ public class PlaywrightManager {
 
             // 如果看到未登录入口，尝试打开二维码登录面板
             Locator noLoginAnchor = zhilianPage.locator("a.home-header__c-no-login").first();
-            if (noLoginAnchor.isVisible()) {
+            if (isVisibleQuick(noLoginAnchor)) {
                 Locator qrToggle = zhilianPage.locator("div.zppp-panel-normal-bar__img").first();
-                if (qrToggle.isVisible()) {
+                if (isVisibleQuick(qrToggle)) {
                     qrToggle.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
                     log.info("已点击智联二维码登录入口，等待用户扫码...");
                 } else {
@@ -1432,23 +1761,30 @@ public class PlaywrightManager {
      */
     @Scheduled(fixedDelay = 3000)
     public void scheduledLoginCheck() {
-        try {
-            if (liepinPage != null && !liepinMonitoringPaused) {
-                checkLiepinLoginStatus(liepinPage);
-            }
-            // 其他平台如需也可启用（保留，但不强制）
-            if (bossPage != null && !bossMonitoringPaused) {
-                checkLoginStatus(bossPage, "boss");
-            }
-            if (job51Page != null && !job51MonitoringPaused) {
-                check51jobLoginStatus(job51Page);
-            }
-            if (zhilianPage != null && !zhilianMonitoringPaused) {
-                checkZhilianLoginStatus(zhilianPage);
-            }
-        } catch (Exception e) {
-            log.debug("定时登录检测异常: {}", e.getMessage());
+        if (playwright == null || context == null) {
+            return;
         }
+        // 必须跑在 Playwright 专用线程上；线程正忙（例如正在投递）就直接跳过这一轮，
+        // 否则会打断投递流程里正在进行的导航
+        tryRunOnPlaywright(() -> {
+            try {
+                if (liepinPage != null && !liepinMonitoringPaused) {
+                    checkLiepinLoginStatus(liepinPage);
+                }
+                // 其他平台如需也可启用（保留，但不强制）
+                if (bossPage != null && !bossMonitoringPaused) {
+                    checkLoginStatus(bossPage, "boss");
+                }
+                if (job51Page != null && !job51MonitoringPaused) {
+                    check51jobLoginStatus(job51Page);
+                }
+                if (zhilianPage != null && !zhilianMonitoringPaused) {
+                    checkZhilianLoginStatus(zhilianPage);
+                }
+            } catch (Exception e) {
+                log.debug("定时登录检测异常: {}", e.getMessage());
+            }
+        });
     }
 
     /**
@@ -1494,17 +1830,12 @@ public class PlaywrightManager {
                 log.info("智联招聘页面已关闭");
             }
 
-            // 关闭共享的BrowserContext
+            // 关闭共享的BrowserContext（持久化上下文关闭即等于关浏览器，没有独立的 Browser 对象）
             if (context != null) {
                 context.close();
-                log.info("共享BrowserContext已关闭");
+                log.info("共享BrowserContext已关闭，浏览器已退出");
             }
 
-            // 关闭浏览器
-            if (browser != null) {
-                browser.close();
-                log.info("浏览器已关闭");
-            }
             if (playwright != null) {
                 playwright.close();
                 log.info("Playwright实例已关闭");
@@ -1520,7 +1851,38 @@ public class PlaywrightManager {
      * 检查Playwright是否已初始化
      */
     public boolean isInitialized() {
-        return playwright != null && browser != null && bossPage != null;
+        return playwright != null && context != null && bossPage != null && !browserClosed;
+    }
+
+    /**
+     * 确保浏览器可用：已经关闭就重新拉起来。
+     * <p>
+     * 浏览器被手动关掉或崩溃之后，各个字段依然非空，界面上看什么都正常，
+     * 但每个页面操作都会抛 TargetClosedError —— 投递任务卡死、按钮点了没反应。
+     * 发起任务前先过一遍这里。
+     */
+    public synchronized void ensureReady() {
+        if (isInitialized()) {
+            return;
+        }
+        log.warn("浏览器不可用（已关闭或未初始化），正在重新初始化...");
+        // 旧对象已经失效，先清干净再重建，避免 init() 里的 isInitialized() 短路
+        try {
+            if (playwright != null) {
+                playwright.close();
+            }
+        } catch (Exception ignored) {
+            // 浏览器已经没了，关闭失败很正常
+        }
+        playwright = null;
+        context = null;
+        bossPage = null;
+        liepinPage = null;
+        job51Page = null;
+        zhilianPage = null;
+        browserClosed = false;
+        loginStatus.clear();
+        init();
     }
 
     /**
@@ -1587,18 +1949,18 @@ public class PlaywrightManager {
                         // 尝试切换到二维码登录（点击“APP扫码登录”按钮），优先使用新版选择器
                         try {
                             Locator qrSwitch = bossPage.locator(".btn-sign-switch.ewm-switch").first();
-                            if (qrSwitch.isVisible()) {
+                            if (isVisibleQuick(qrSwitch)) {
                                 qrSwitch.click();
                             } else {
                                 // 兜底：按文本匹配内部提示
                                 Locator tip = bossPage.getByText("APP扫码登录").first();
-                                if (tip.isVisible()) {
+                                if (isVisibleQuick(tip)) {
                                     tip.click();
                                     log.info("已点击包含文本的二维码登录切换提示（APP扫码登录）");
                                 } else {
                                     // 兼容旧版选择器
                                     Locator legacy = bossPage.locator("li.sign-switch-tip").first();
-                                    if (legacy.isVisible()) {
+                                    if (isVisibleQuick(legacy)) {
                                         legacy.click();
                                         log.info("已通过旧版选择器切换二维码登录（li.sign-switch-tip）");
                                     } else {

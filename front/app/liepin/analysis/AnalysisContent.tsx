@@ -60,7 +60,7 @@ type PagedResult = {
   size: number
 }
 
-const API_BASE = "http://localhost:8888"
+import { API_BASE } from "@/lib/api"
 const CATEGORY_COLORS = [
   "#3b82f6",
   "#10b981",

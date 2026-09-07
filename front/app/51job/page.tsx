@@ -11,6 +11,7 @@ import { Select } from '@/components/ui/select'
 import PageHeader from '@/app/components/PageHeader'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnalysisContent from '@/app/51job/analysis/AnalysisContent'
+import { API_BASE } from '@/lib/api'
 
 interface Job51Config {
   id?: number
@@ -26,7 +27,7 @@ interface Job51Options { jobArea: Job51Option[]; salary: Job51Option[] }
 const MAX_SALARY_SELECTIONS = 5
 
 export default function Job51Page() {
-  const API = process.env.API_BASE_URL || 'http://localhost:8888'
+  const API = process.env.API_BASE_URL || `${API_BASE}`
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [isDelivering, setIsDelivering] = useState(false)
   const [checkingLogin, setCheckingLogin] = useState(true)

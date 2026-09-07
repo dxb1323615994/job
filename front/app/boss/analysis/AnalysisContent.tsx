@@ -64,7 +64,7 @@ type PagedResult = {
   size: number
 }
 
-const API_BASE = "http://localhost:8888"
+import { API_BASE } from "@/lib/api"
 // 通用分类颜色（用于柱状/饼状图每个分类不同颜色）
 const CATEGORY_COLORS = [
   "#3b82f6",

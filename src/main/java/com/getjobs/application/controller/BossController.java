@@ -96,9 +96,13 @@ public class BossController {
                 return ResponseEntity.badRequest().body(response);
             }
             if (bossJobService.isRunning()) {
+                long seconds = bossJobService.runningForMillis() / 1000;
                 response.put("success", false);
-                response.put("message", "Boss任务已在运行中，请等待当前任务完成");
+                response.put("message", String.format(
+                        "Boss任务已在运行中（已运行 %d 分 %d 秒）。如果长时间没有进展，先点\"停止投递\"再重新开始",
+                        seconds / 60, seconds % 60));
                 response.put("status", "running");
+                response.put("runningSeconds", seconds);
                 return ResponseEntity.badRequest().body(response);
             }
             CompletableFuture.runAsync(() -> bossJobService.executeDelivery(pm -> {

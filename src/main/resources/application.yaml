@@ -26,7 +26,7 @@ spring:
 
 # 服务器配置
 server:
-  port: 8888  # 后端 API 固定端口
+  port: 9679  # 后端 API 固定端口
 
 # 日志配置
 logging:

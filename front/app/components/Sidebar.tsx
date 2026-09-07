@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import { BiEnvelope, BiBriefcase, BiSearch, BiTask, BiUserCircle, BiBrain, BiMoon, BiSun } from 'react-icons/bi'
 import { motion } from 'framer-motion'
 import { useTheme } from 'next-themes'
+import { API_BASE } from '@/lib/api'
 
 export default function Sidebar() {
   const pathname = usePathname()
@@ -26,7 +27,7 @@ export default function Sidebar() {
     const check = async () => {
       if (checking) return
       setChecking(true)
-      const baseUrl = process.env.API_BASE_URL || 'http://localhost:8888'
+      const baseUrl = process.env.API_BASE_URL || `${API_BASE}`
 
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 3000)

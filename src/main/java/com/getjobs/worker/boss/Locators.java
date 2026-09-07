@@ -8,6 +8,9 @@ public class Locators {
     // 主页相关元素
     public static final String LOGIN_BTN = "//li[@class='nav-figure']";
     public static final String LOGIN_SCAN_SWITCH = "//div[@class='btn-sign-switch ewm-switch']";
+    // 首页搜索框与搜索按钮：用真实 UI 搜索代替直接拼 URL 跳转，降低触发风控的概率
+    public static final String HOME_SEARCH_INPUT = "input.ipt-search";
+    public static final String HOME_SEARCH_BUTTON = "button.btn-search";
 
     /**
      * 搜索结果页相关元素
