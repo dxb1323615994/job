@@ -3,30 +3,39 @@
 
 [![Stars](https://img.shields.io/github/stars/loks666/get_jobs?style=flat&label=%F0%9F%8C%9Fstars&labelColor=ff4f4f&color=ff8383)](https://github.com/loks666/get_jobs)
 [![QQ交流群](https://img.shields.io/badge/🐧QQ交流群-get_jobs-0FB5EB?labelColor=235389&logoColor=white&style=flat)][qq-link]
-[![License](https://img.shields.io/badge/📑licenses-MIT-34D058?labelColor=22863A&style=flat)](https://github.com/loks666/get_jobs/blob/master/LICENSE)
+[![License](https://img.shields.io/badge/📑license-PolyForm--NC--1.0.0-34D058?labelColor=22863A&style=flat)](https://github.com/loks666/get_jobs/blob/main/LICENSE)
 ![Issues closed](https://img.shields.io/github/issues-search?query=repo%3Aloks666/get_jobs+is%3Aclosed&label=%F0%9F%A4%8F%F0%9F%8F%BBFissues%20closed&labelColor=008B8B&color=00CCCC)
 [![Forks](https://img.shields.io/github/forks/loks666/get_jobs?style=flat&label=%F0%9F%8F%85Forks&labelColor=800080&color=912CEE)](https://github.com/loks666/get_jobs/forks)
+[![Release](https://img.shields.io/github/v/release/loks666/get_jobs?style=flat&label=%F0%9F%93%A6release&labelColor=B8860B&color=DAA520)](https://github.com/loks666/get_jobs/releases)
+[![Last Commit](https://img.shields.io/github/last-commit/loks666/get_jobs/main?style=flat&label=%F0%9F%95%92last%20commit&labelColor=4B0082&color=7B68EE)](https://github.com/loks666/get_jobs/commits/main)
+
+[![JDK](https://img.shields.io/badge/☕JDK-21-FF8C00?labelColor=C04000&style=flat)](https://adoptium.net/temurin/releases/?version=21)
+[![Spring Boot](https://img.shields.io/badge/🍃Spring%20Boot-3.5-6DB33F?labelColor=2E7D32&style=flat)](https://spring.io/projects/spring-boot)
+[![Gradle](https://img.shields.io/badge/🐘Gradle-9.7-26A69A?labelColor=00695C&style=flat)](https://gradle.org/)
+[![Playwright](https://img.shields.io/badge/🎭Patchright-1.62-E2574C?labelColor=A93226&style=flat)](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)
+[![SQLite](https://img.shields.io/badge/🗃️SQLite-3-4FC3F7?labelColor=0277BD&style=flat)](https://www.sqlite.org/)
+[![Next.js](https://img.shields.io/badge/⚡Next.js-16-B39DDB?labelColor=5E35B1&style=flat)](https://nextjs.org/)
+[![React](https://img.shields.io/badge/⚛️React-19-61DAFB?labelColor=1E88E5&style=flat)](https://react.dev/)
 
 </div>
 <div align="center">
 <h2 align="center">黑暗无论多么长，光明迟早总是会来的</h2>
 <p><strong>我知道你心中有煎熬，有焦虑，像一柄长剑悬在头顶，随时可能落下。</strong><br>
 <strong>黎明破晓之时，苦难都将化作勋章</strong></p>
-<strong>🪅GUI版本盛大登场</strong>
+<strong>🪅GUI盛大登场</strong>
 
 <p align="center">
   <a href="https://trendshift.io/repositories/9608">
-    <img src="https://trendshift.io/api/badge/repositories/9608" alt="GitHub Trending">
+    <img src="https://trendshift.io/api/badge/trendshift/repositories/9608/daily?language=Java" alt="#1 Java Repository Of The Day" height="55">
   </a>
 </p>
+
 </div>
 
-- 📌 **目前该项目存在的问题**
-    - 【紧急】目前Boss新增了检测机制，导致网页被回退，目前解决的问题是首页已完成正常访问，但在投递过程中会不断的刷新，如哪位有解决的办法，请务必分享，感激不尽，讨论链接：https://github.com/loks666/get_jobs/discussions/250
-    - 当前智联招聘平台有问题，其他平台可正常使用，如有兄台解决了智联招聘投递问题沟通后可提交pr。
-    - 本项目已改为禁止商业化的开源协议,请勿将此项目进行商业化
+- 🔔 *重要更新*  
+    - boss已可投递使用，其他平台暂未测试，仍然建议手动在boss端投递，使用本项目在PC兜底使用。
+    - 本项目采用 PolyForm Noncommercial 1.0.0 协议，允许免费的非商业使用，禁止任何形式的商业使用；商业授权请联系作者
     - [【重要】跳转到文末更新日志](#-更新日志)
-    - 老版本在本项目的genesis分支上，目前可能暂停更新，如有修复老版本问题的可联系后提交pr
     - 前端项目的编译版本会发布在release页面，如不想启动前端，可将dist文件夹放到resources文件夹下直接启动后端使用
 
 ### 🌴源码地址
@@ -34,9 +43,10 @@
 - Github(国外访问)：https://github.com/loks666/get_jobs
 - Gitee·码云(中国大陆)：https://gitee.com/lok666/get_jobs
 
-### AI代理暂时已停用，在联系解决中，未解决前请勿使用
+### 📢 广告位招租
 
-- https://api.ruyun.fun/ [**支持市面全部大模型！折扣比例2比1！1刀也可充，详情请联系站内客服**]
+- 本项目月均访问量可观，Star 8.4k+，QQ 交流群活跃，欢迎与求职、AI、开发工具相关的产品洽谈合作
+- 合作邮箱：`super_xiang@126.com`，或通过 QQ 群联系
 
 ## 🌟 特色功能
 
@@ -54,7 +64,7 @@
 - ❌必须要关闭墙外代理，由于主要针对的国内平台，墙外代理会导致页面加载缓慢
 - 💪🏻如你有“折腾精神”希望自己配置，QQ群内提供免费答疑，如你不想麻烦，可进入群聊查看群公告
 - 📰由于不同系统的页面不一样，导致可能不兼容，文末会给出文档，尽可能让大家能自定义修改
-- 🚩如您不方便访问github，可使用码云镜像(中国大陆)版本：[gitee/getjobs](https://gitee.com/loks666/get_jobs)
+- 🚩如您不方便访问github，可使用码云镜像(中国大陆)版本：[gitee/getjobs](https://gitee.com/lok666/get_jobs)
 
 > 已经有人在交流群里 **发广告** 等与本项目无关的信息
 > 如果带着不同目的或者没想清楚就进群的
@@ -76,7 +86,19 @@ cd get_jobs
 
 更多环境配置详情请点击：📚 [环境配置](https://github.com/loks666/get_jobs/wiki/环境配置)
 
-### 3️⃣ 网页端修改配置，并保存(一般默认即可,需要修改自己的地区和岗位)
+### 3️⃣ 下载数据库文件（新用户必做）
+
+本项目不会自动建表，**没有数据库文件无法启动**。为避免把开发者本机的配置和登录态一起发布，仓库中不包含数据库文件，请从 release 页面下载空数据库：
+
+1. 到 [最新 release](https://github.com/loks666/get_jobs/releases/latest) 下载 `getjobs.db.template`
+2. **把它重命名为 `getjobs.db`**
+3. 放到项目根目录的 `db/` 文件夹下，最终路径为 `db/getjobs.db`
+
+这个空库已经带好了 16 张表的结构和各平台下拉框的字典数据（城市、行业、经验、学历等共 673 条），配置、Cookie、投递记录都是空的，由你自己在网页端填写。
+
+> ⚠️ 老用户升级时不要覆盖自己已有的 `db/getjobs.db`，否则配置和登录态会全部丢失。
+
+### 4️⃣ 网页端修改配置，并保存(一般默认即可,需要修改自己的地区和岗位)
 
 - 🤖 AI配置
 
@@ -92,12 +114,8 @@ cd get_jobs
     - `API_KEY`：调用的API KEY
     - `MODEL`：需要使用的模型名称
 
-  > 根据测试，boss直聘在每天所有的岗位投递结束后消耗的额度(gpt-5-nano)大约在0.06美元(6美分)  
-  > 左右，代理除了在本项目中可用，也可使用客户端(https://github.com/knowlimit/ChatGPT-NextWeb)进行使用  
-  > 在日常生活中使用，所以不会浪费，充值额度1刀起，随用随充  
-  > 💥注意！AI代理地址:如云API:https://api.ruyun.fun/
-  ，该网站可自主充值需要的金额，无任何捆绑消费，支持市面上全部大模型，2人民币=1美元，base_url默认使用"https://api.ruyun.fun/"
-  即可
+  > 根据测试，boss直聘在每天所有的岗位投递结束后消耗的额度(gpt-5-nano)大约在0.06美元(6美分)左右，日常使用成本很低  
+  > 💥`BASE_URL` 填任意兼容 OpenAI 接口格式的地址即可（官方接口或你自己的中转服务都可以），本项目不绑定、不推荐任何第三方代理商
 
     - AI生成的打招呼语示例  
       <img src="src/main/resources/images/AiSayHi.png" alt="AI生成的打招呼语示例">
@@ -130,7 +148,7 @@ cd get_jobs
   > 智联招聘需要指定默认投递简历(在线简历 or 附件简历)，否则会投递失败
   > 只可微信扫码，请绑定微信账号
 
-### 4️⃣ 运行代码
+### 5️⃣ 运行代码
 
 - 🏃🏻‍♂️‍➡️ 运行启动类即可[GetJobsApplication.java](src/main/java/com/getjobs/GetJobsApplication.java)
 
@@ -151,16 +169,23 @@ cd get_jobs
 ![智联岗位分析.png](doc/imgs/%E6%99%BA%E8%81%94%E5%B2%97%E4%BD%8D%E5%88%86%E6%9E%90.png)
 ---
 
-## 📧 联系方式
-
-- V2VDaGF0OkFpckVsaWF1azk1Mjcs6K+35aSH5rOo77ya5pq06aOO6Zuo5bCx6KaB5p2l5LqG
-
 ## 👨🏻‍🔧 QQ群
+[![get_jobs交流①群](https://img.shields.io/badge/🐧get__jobs交流①群-1890人-0FB5EB?labelColor=235389&logoColor=white&style=flat)][qq-link]  
+[![get_jobs交流②群](https://img.shields.io/badge/🐧get__jobs交流②群-322人-0FB5EB?labelColor=235389&logoColor=white&style=flat)][qq-link-2]
 
-- 点击下方卡片添加即可：QQ加群答案为本项目仓库名【get_jobs】  
-  [![QQ交流群](https://img.shields.io/badge/🐧QQ交流群-get_jobs-0FB5EB?labelColor=235389&logoColor=white&style=flat)][qq-link]
 
-> 点击下面的链接可直接加群，微信群由于没有活跃度，所以停止了
+## ☕ 赞赏支持
+
+<div align="center">
+<table>
+<tr>
+<td align="center"><img src="src/main/resources/images/aliPay.jpg" alt="支付宝" width="220"><br/>支付宝</td>
+<td align="center"><img src="src/main/resources/images/wechatpay.jpg" alt="微信支付" width="220"><br/>微信支付</td>
+</tr>
+</table>
+</div>
+
+> 本项目免费开源，我从未想到过有人会打赏，直到我某天真的收到了来自某人的赞赏支持，深受触动，所以重新开启了打赏码，不论打赏与否，本项目都将感谢您对本项目的支持与使用！
 
 ## 🚩 环境部署问题
 
@@ -182,6 +207,12 @@ cd get_jobs
 
 - 本项目禁止一切未经沟通的pr，会直接拒掉，如有贡献需求，请在issue和discussions中查看自己可以开发的功能和内容，群里与我沟通
 
+> 感谢每一位为本项目提交过代码的朋友 🙏
+
+<a href="https://github.com/loks666/get_jobs/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=loks666/get_jobs" alt="贡献者" />
+</a>
+
 ---
 
 ## 🚀 PR 提交流程（非常重要！）
@@ -193,6 +224,9 @@ cd get_jobs
 4. 提交 Commit 时，请在信息前加上一个符合提交内容的 **Emoji 表情
    **（[emoji网站](https://www.emojiall.com/zh-hans/all-emojis)）自由发挥！
 5. 等待管理员审核，验证无误后，代码将合并到 `main` 分支
+
+> 📑 本项目已启用[贡献者许可协议（CLA）](CLA.md)，提交 PR 时需在模板中勾选同意。
+> 你的版权仍归你自己，CLA 只是让维护者能在保持项目非商业免费开放的同时对外授予商业许可。
 
 ---
 
@@ -220,13 +254,21 @@ cd get_jobs
 
 ### ☕️ Github Star历史
 
-[![Stargazers over time](https://starchart.cc/loks666/get_jobs.svg?background=%23ffffff&axis=%23101010&line=%23e86161)](https://starchart.cc/loks666/get_jobs)
+<a href="https://star-history.com/#loks666/get_jobs&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=loks666/get_jobs&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=loks666/get_jobs&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=loks666/get_jobs&type=Date" />
+  </picture>
+</a>
 
 <!-- LINK GROUP -->
 
 <!-- [![][fossa-license-shield]][fossa-license-link] -->
 
 [qq-link]: https://qm.qq.com/q/qJwmIrqPU
+
+[qq-link-2]: https://qun.qq.com/universal-share/share?ac=1&authKey=qo6bGkogtLrVusb7GI%2Bv08KaTWEofET0bo%2Bdk5hqEk1JEY0II3Lu%2FGXPCoROWZUe&busi_data=eyJncm91cENvZGUiOiI1Nzg3ODU1MDUiLCJ0b2tlbiI6IjRXQklndWdFRkloTlpRUE82UXpUREVSa0FDN3Y2UDI1UE42VHBiV3NmYjNLYkdGczRMKzdId0NHeGdQVXMrRjEiLCJ1aW4iOiIyODQxOTAwNTYifQ%3D%3D&data=DR0uxpwdTVM1YFw3evPIbj_L-79Bp1AU91gfeieGqh8D4uEXGuxAl-lmZ2SEW6UNUuKNBtKzGflIYe6vPa9SqA&svctype=4&tempid=h5_group_info
 
 [qq-shield-badge]: https://img.shields.io/badge/QQ交流群-get_jobs-0FB5EB?labelColor=235389&logo=tencent-qq&logoColor=white&style=flat
 
