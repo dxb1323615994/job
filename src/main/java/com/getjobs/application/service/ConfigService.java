@@ -120,28 +120,17 @@ public class ConfigService {
     }
 
     /**
-     * 批量更新配置
+     * 批量更新配置，键不存在时自动新增
      * @param configMap 配置Map，key为config_key，value为config_value
-     * @return 更新的配置数量
+     * @return 成功写入的配置数量
      */
     @Transactional
     public int batchUpdateConfigs(Map<String, String> configMap) {
         int updateCount = 0;
 
         for (Map.Entry<String, String> entry : configMap.entrySet()) {
-            String key = entry.getKey();
-            String value = entry.getValue();
-
-            ConfigEntity config = getConfigByKey(key);
-
-            if (config != null) {
-                config.setConfigValue(value);
-                config.setUpdatedAt(LocalDateTime.now());
-                configMapper.updateById(config);
+            if (upsertConfig(entry.getKey(), entry.getValue())) {
                 updateCount++;
-                log.info("更新配置: {} = {}", key, value);
-            } else {
-                log.warn("配置键不存在: {}", key);
             }
         }
 
@@ -149,28 +138,58 @@ public class ConfigService {
     }
 
     /**
-     * 更新单个配置
+     * 更新单个配置，键不存在时自动新增
      * @param configKey 配置键
      * @param configValue 配置值
-     * @return 是否更新成功
+     * @return 是否写入成功
      */
     @Transactional
     public boolean updateConfig(String configKey, String configValue) {
+        return upsertConfig(configKey, configValue);
+    }
+
+    /**
+     * 写入一个配置项：存在则更新，不存在则新增。
+     * <p>
+     * 这里必须是 upsert 而不是单纯的 update。config 表里的键（BASE_URL、API_KEY、
+     * MODEL、HOOK_URL、BOT_IS_SEND）原先依赖数据库文件预先带好，一旦某个键不存在，
+     * 旧实现只打一行 warn 就返回 false，接口在前端看来是保存成功了，实际一个字都没
+     * 落库，而读取侧 requireConfigValue 会持续抛"缺少必要配置"——用户根本查不出原因。
+     * 新增配置键时同样会踩这个坑：老用户的库里没有那一行，写入就静默失败。
+     */
+    private boolean upsertConfig(String configKey, String configValue) {
+        if (configKey == null || configKey.isBlank()) {
+            log.warn("配置键为空，跳过写入");
+            return false;
+        }
+
         ConfigEntity config = getConfigByKey(configKey);
 
         if (config != null) {
             config.setConfigValue(configValue);
             config.setUpdatedAt(LocalDateTime.now());
-            int result = configMapper.updateById(config);
-
-            if (result > 0) {
-                log.info("更新配置成功: {} = {}", configKey, configValue);
+            if (configMapper.updateById(config) > 0) {
+                log.info("更新配置: {}", configKey);
                 return true;
             }
-        } else {
-            log.warn("配置键不存在: {}", configKey);
+            log.warn("更新配置失败: {}", configKey);
+            return false;
         }
 
+        ConfigEntity created = new ConfigEntity();
+        created.setConfigKey(configKey);
+        created.setConfigValue(configValue);
+        created.setConfigType("string");
+        created.setCategory("custom");
+        created.setDescription("由配置接口自动创建");
+        created.setCreatedAt(LocalDateTime.now());
+        created.setUpdatedAt(LocalDateTime.now());
+
+        if (configMapper.insert(created) > 0) {
+            log.info("配置键不存在，已自动创建: {}", configKey);
+            return true;
+        }
+        log.warn("创建配置失败: {}", configKey);
         return false;
     }
 
