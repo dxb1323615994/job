@@ -7,7 +7,7 @@ config.yaml
 ### IntelliJ IDEA ###
 *.iws
 *.iml
-*.ipr
+*.ipra
 .idea
 *.sh
 CLAUDE.md
@@ -45,6 +45,8 @@ merge_prs.log
 ### Mac OS ###
 .DS_Store
 cookie.json
+# 各平台登录 Cookie（cookies/<platform>.json，含登录态，绝对不能提交）
+cookies/
 .env
 chromedriver
 *.jpg
