@@ -1,13 +1,13 @@
 <h1 align="center">🍀 Get Jobs【工作无忧】</h1>
 <div align="center">
 
-[![Stars](https://img.shields.io/github/stars/loks666/get_jobs?style=flat&label=%F0%9F%8C%9Fstars&labelColor=ff4f4f&color=ff8383)](https://github.com/loks666/get_jobs)
-[![QQ交流群](https://img.shields.io/badge/🐧QQ交流群-get_jobs-0FB5EB?labelColor=235389&logoColor=white&style=flat)][qq-link]
-[![License](https://img.shields.io/badge/📑license-PolyForm--NC--1.0.0-34D058?labelColor=22863A&style=flat)](https://github.com/loks666/get_jobs/blob/main/LICENSE)
-![Issues closed](https://img.shields.io/github/issues-search?query=repo%3Aloks666/get_jobs+is%3Aclosed&label=%F0%9F%A4%8F%F0%9F%8F%BBFissues%20closed&labelColor=008B8B&color=00CCCC)
-[![Forks](https://img.shields.io/github/forks/loks666/get_jobs?style=flat&label=%F0%9F%8F%85Forks&labelColor=800080&color=912CEE)](https://github.com/loks666/get_jobs/forks)
-[![Release](https://img.shields.io/github/v/release/loks666/get_jobs?style=flat&label=%F0%9F%93%A6release&labelColor=B8860B&color=DAA520)](https://github.com/loks666/get_jobs/releases)
-[![Last Commit](https://img.shields.io/github/last-commit/loks666/get_jobs/main?style=flat&label=%F0%9F%95%92last%20commit&labelColor=4B0082&color=7B68EE)](https://github.com/loks666/get_jobs/commits/main)
+[![Stars](https://img.shields.io/github/stars/loks666/get_jobs?style=flat&label=🌟stars&labelColor=ff4f4f&color=ff8383)](https://github.com/loks666/get_jobs)
+[![QQ交流群](https://img.shields.io/badge/🐧QQ交流群-get_jobs-0FB5EB?labelColor=235389&logoColor=white&style=flat)](qq-link)
+[![License](https://img.shields.io/badge/📑license-PolyForm-34D058?labelColor=22863A&style=flat)](https://github.com/loks666/get_jobs/blob/main/LICENSE)
+![🤏🏻closed](https://img.shields.io/github/issues-search?query=repo%3Aloks666/get_jobs+is%3Aclosed&label=🤏🏻%20closed&labelColor=008B8B&color=00CCCC)
+[![Forks](https://img.shields.io/github/forks/loks666/get_jobs?style=flat&label=🏅%20forks&labelColor=800080&color=912CEE)](https://github.com/loks666/get_jobs/forks)
+[![Release](https://img.shields.io/github/v/release/loks666/get_jobs?style=flat&label=📦release&labelColor=B8860B&color=DAA520)](https://github.com/loks666/get_jobs/releases)
+[![updated](https://img.shields.io/github/last-commit/loks666/get_jobs/main?style=flat&label=🕒%20updated&labelColor=4B0082&color=7B68EE)](https://github.com/loks666/get_jobs/commits/main)
 
 [![JDK](https://img.shields.io/badge/☕JDK-21-FF8C00?labelColor=C04000&style=flat)](https://adoptium.net/temurin/releases/?version=21)
 [![Spring Boot](https://img.shields.io/badge/🍃Spring%20Boot-3.5-6DB33F?labelColor=2E7D32&style=flat)](https://spring.io/projects/spring-boot)
