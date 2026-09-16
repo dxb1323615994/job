@@ -2,7 +2,7 @@
 <div align="center">
 
 [![Stars](https://img.shields.io/github/stars/loks666/get_jobs?style=flat&label=🌟stars&labelColor=ff4f4f&color=ff8383)](https://github.com/loks666/get_jobs)
-[![QQ交流群](https://img.shields.io/badge/🐧QQ交流群-get_jobs-0FB5EB?labelColor=235389&logoColor=white&style=flat)](qq-link)
+[![QQ交流群](https://img.shields.io/badge/🐧QQ交流群-get_jobs-0FB5EB?labelColor=235389&logoColor=white&style=flat)][qq-link]
 [![License](https://img.shields.io/badge/📑license-PolyForm-34D058?labelColor=22863A&style=flat)](https://github.com/loks666/get_jobs/blob/main/LICENSE)
 ![🤏🏻closed](https://img.shields.io/github/issues-search?query=repo%3Aloks666/get_jobs+is%3Aclosed&label=🤏🏻%20closed&labelColor=008B8B&color=00CCCC)
 [![Forks](https://img.shields.io/github/forks/loks666/get_jobs?style=flat&label=🏅%20forks&labelColor=800080&color=912CEE)](https://github.com/loks666/get_jobs/forks)
