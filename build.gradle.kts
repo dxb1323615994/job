@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "com.getjobs"
-version = "0.0.1-SNAPSHOT"
+version = "2.0.1"
 
 java {
     toolchain { languageVersion.set(JavaLanguageVersion.of(21)) }
@@ -43,6 +43,7 @@ dependencies {
     implementation("org.json:json:20231013")
     implementation("io.github.cdimascio:dotenv-java:2.2.0")
     implementation("jakarta.annotation:jakarta.annotation-api:2.1.1")
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
 
     // Lombok：两行不是重复声明，两个配置各管一段，缺一不可
     //   compileOnly         -> 只在编译期可见，不进运行时 classpath、不打进 jar
