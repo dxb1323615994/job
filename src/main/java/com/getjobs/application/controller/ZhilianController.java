@@ -175,7 +175,6 @@ public class ZhilianController {
             CookieEntity cookie = cookieService.getCookieByPlatform("zhilian");
             Map<String, Object> data = new HashMap<>();
             if (cookie != null) {
-                data.put("id", cookie.getId());
                 data.put("platform", cookie.getPlatform());
                 data.put("cookie_value", cookie.getCookieValue());
                 data.put("remark", cookie.getRemark());

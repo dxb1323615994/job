@@ -20,7 +20,7 @@ import java.net.URI;
 @Component
 public class StartupRunner implements ApplicationRunner {
 
-    @Value("${server.port:9679}")
+    @Value("${server.port:9527}")
     private int backendPort;
 
     private static final int FRONTEND_PORT = 6866;

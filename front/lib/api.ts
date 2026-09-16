@@ -14,7 +14,7 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ||
   process.env.API_BASE_URL ||
-  'http://localhost:9679'
+  'http://localhost:9527'
 
 /** 拼接后端接口地址，path 以 / 开头，例如 apiUrl('/api/boss/config') */
 export function apiUrl(path: string): string {

@@ -342,7 +342,6 @@ public class JobController {
             CookieEntity cookie = cookieService.getCookieByPlatform("51job");
             Map<String, Object> data = new HashMap<>();
             if (cookie != null) {
-                data.put("id", cookie.getId());
                 data.put("platform", cookie.getPlatform());
                 data.put("cookie_value", cookie.getCookieValue());
                 data.put("remark", cookie.getRemark());

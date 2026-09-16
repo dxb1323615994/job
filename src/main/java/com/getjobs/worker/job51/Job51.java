@@ -187,14 +187,6 @@ public class Job51 {
             }
 
             // 导航到搜索页面
-            try {
-                java.util.Map<String, String> headers = new java.util.HashMap<>();
-                headers.put("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8");
-                headers.put("Accept-Language", "zh-CN,zh;q=0.9");
-                headers.put("Sec-Fetch-Site", "same-site");
-                headers.put("Sec-Fetch-Mode", "navigate");
-                page.setExtraHTTPHeaders(headers);
-            } catch (Throwable ignored) {}
             page.navigate(searchUrl);
             PlaywrightUtil.sleep(1);
 

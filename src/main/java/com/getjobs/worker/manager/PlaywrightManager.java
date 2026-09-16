@@ -17,9 +17,6 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -131,7 +128,6 @@ public class PlaywrightManager {
     private static final String LIEPIN_DOMAIN = "liepin.com";
     private static final String JOB51_DOMAIN = "51job.com";
     private static final String ZHILIAN_DOMAIN = "zhaopin.com";
-    private static final String BOSS_INIT_SCRIPT_RESOURCE = "anti-detection.js";
     // 降噪：51job Cookie保存日志节流状态
     private volatile long last51CookieLogMs = 0L;
     private volatile int last51CookieLogCount = -1;
@@ -489,18 +485,6 @@ public class PlaywrightManager {
             return "官方 driver-bundle（没找到 patchright，反检测能力下降）";
         }
         return "patchright @ " + cliDir;
-    }
-
-    private String readResourceText(String resourcePath) {
-        try (InputStream input = PlaywrightManager.class.getClassLoader().getResourceAsStream(resourcePath)) {
-            if (input == null) {
-                return null;
-            }
-            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            log.warn("读取资源失败: {} - {}", resourcePath, e.getMessage());
-            return null;
-        }
     }
 
     /**
