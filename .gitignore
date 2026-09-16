@@ -7,7 +7,7 @@ config.yaml
 ### IntelliJ IDEA ###
 *.iws
 *.iml
-*.ipra
+*.ipr
 .idea
 *.sh
 CLAUDE.md
