@@ -18,6 +18,11 @@
 [![React](https://img.shields.io/badge/⚛️React-19-61DAFB?labelColor=1E88E5&style=flat)](https://react.dev/)
 
 </div>
+
+> **本仓库是个人修改版（fork）**，基于 [loks666/get_jobs](https://github.com/loks666/get_jobs)。
+> 新增：工作日全自动投递调度、Boss 日额度熔断、分轮投递、Boss 自动复聊、页面自愈。
+> 改动明细与使用须知见 **[FORK-NOTICE.md](FORK-NOTICE.md)**。
+
 <div align="center">
 <h2 align="center">黑暗无论多么长，光明迟早总是会来的</h2>
 <p><strong>我知道你心中有煎熬，有焦虑，像一柄长剑悬在头顶，随时可能落下。</strong><br>
