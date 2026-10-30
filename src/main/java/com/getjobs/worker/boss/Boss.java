@@ -62,6 +62,28 @@ public class Boss {
     @Setter
     private Supplier<Boolean> shouldStopCallback;
 
+    /**
+     * 连续多少次「打开聊天页超时」就判定为 Boss 当日沟通次数已达上限。
+     * <p>
+     * 2026-10-30 实测：累计投到第 82 个之后，每一次点击都卡在等待聊天页超时，
+     * 37 次全部失败却仍在继续翻岗位，白白空转 20 多分钟。撞上限后每次都只弹一个
+     * 没被识别的提示框，聊天页永远不会出现，所以连续超时数是很可靠的信号。
+     * 8 次 × 20 秒 ≈ 160 秒，既能确认不是偶发网络抖动，也不会拖太久。
+     */
+    private static final int MAX_CONSECUTIVE_CHAT_TIMEOUTS = 8;
+
+    /** 连续超时计数，成功打开一次聊天页即归零 */
+    private volatile int consecutiveChatTimeouts = 0;
+
+    /** 已判定撞上当日沟通上限，本轮投递应尽快收工 */
+    private volatile boolean quotaExhausted = false;
+
+    /** 是否应当结束投递：用户点停止，或已判定撞上 Boss 日上限 */
+    private boolean stopped() {
+        return quotaExhausted
+                || (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get()));
+    }
+
     private final List<Job> resultList = new ArrayList<>();
 
     /** Boss 首页，UI 搜索的入口 */
@@ -109,14 +131,19 @@ public class Boss {
      * 执行投递
      */
     public int execute() {
+        // 每轮投递重新计数：上一轮撞上限不能影响下一轮（上限是按天重置的）
+        consecutiveChatTimeouts = 0;
+        quotaExhausted = false;
         for (String cityCode : config.getCityCode()) {
-            if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
-                progressCallback.accept("用户取消投递", 0, 0);
+            if (stopped()) {
+                progressCallback.accept(quotaExhausted
+                        ? "Boss 疑似达到当日沟通上限，提前结束" : "用户取消投递", 0, 0);
                 break;
             }
             postJobByCity(cityCode);
-            if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
-                progressCallback.accept("用户取消投递", 0, 0);
+            if (stopped()) {
+                progressCallback.accept(quotaExhausted
+                        ? "Boss 疑似达到当日沟通上限，提前结束" : "用户取消投递", 0, 0);
                 break;
             }
         }
@@ -228,8 +255,8 @@ public class Boss {
         String searchUrl = getSearchUrl(cityCode);
         for (String keyword : config.getKeywords()) {
             // 检查是否需要停止
-            if (shouldStopCallback.get()) {
-                progressCallback.accept("用户取消投递", 0, 0);
+            if (stopped()) {
+                progressCallback.accept(quotaExhausted ? "Boss 疑似达到当日沟通上限，提前结束" : "用户取消投递", 0, 0);
                 return;
             }
 
@@ -253,8 +280,9 @@ public class Boss {
             boolean loadedAll = false;
             for (int i = 0; i < 300; i++) {
                 // 停止检查：滚动加载过程中也要及时响应
-                if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
-                    progressCallback.accept("用户取消投递", 0, 0);
+                if (stopped()) {
+                    progressCallback.accept(quotaExhausted
+                        ? "Boss 疑似达到当日沟通上限，提前结束" : "用户取消投递", 0, 0);
                     return;
                 }
                 // 滚动加载期间 Boss 会频繁增删 frame，Playwright 派发这些事件时可能
@@ -328,7 +356,7 @@ public class Boss {
             int count = cards.count();
             for (int i = 0; i < count; i++) {
                 // 检查是否需要停止
-                if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+                if (stopped()) {
                     progressCallback.accept("用户取消投递", i, count);
                     return;
                 }
@@ -1003,7 +1031,7 @@ public class Boss {
     @SneakyThrows
     private boolean resumeSubmission(String keyword, Job job) {
         // 若收到停止指令，直接短路返回
-        if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+        if (stopped()) {
             log.info("停止指令已触发，跳过投递 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
             return false;
         }
@@ -1038,7 +1066,7 @@ public class Boss {
             boolean repeatChat = false;
             String repeatMessage = null;
             for (int i = 0; i < 5; i++) {
-                if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+                if (stopped()) {
                     log.info("停止指令已触发，结束查找聊天按钮 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
                     try { detailPage.close(); } catch (Exception ignore) {}
                     return false;
@@ -1078,8 +1106,25 @@ public class Boss {
                 }
             }
             BossChatNavigator.Chat chat = navigator.open(chatBtn.first(), repeatChat,
-                    Boolean.TRUE.equals(config.getAllowRepeatChat()), shouldStopCallback, 20_000);
-            if (chat == null) return false;
+                    Boolean.TRUE.equals(config.getAllowRepeatChat()), this::stopped, 20_000);
+            if (chat == null) {
+                // 只有「等待聊天页超时」才计入熔断；正常跳过（重复沟通未开启等）不算。
+                if (navigator.lastTimedOut()) {
+                    consecutiveChatTimeouts++;
+                    if (consecutiveChatTimeouts >= MAX_CONSECUTIVE_CHAT_TIMEOUTS && !quotaExhausted) {
+                        quotaExhausted = true;
+                        log.error("连续 {} 个岗位打不开聊天页，判定 Boss 当日沟通次数已达上限，本轮投递提前结束"
+                                        + "（已投 {} 个）| 公司：{} | 岗位：{}",
+                                consecutiveChatTimeouts, resultList.size(),
+                                job.getCompanyName(), job.getJobName());
+                        progressCallback.accept("Boss 疑似达到当日沟通上限，提前结束投递", 0, 0);
+                    }
+                } else {
+                    consecutiveChatTimeouts = 0;
+                }
+                return false;
+            }
+            consecutiveChatTimeouts = 0;
             detailPage = chat.page();
             repeatChat = chat.repeat();
             // 重复沟通状态由岗位按钮决定，通知框本身不代表旧会话。
@@ -1112,26 +1157,35 @@ public class Boss {
             }
             String message = repeatChat ? repeatMessage : (isValidString(aiMessage) ? aiMessage : config.getSayHi());
 
-            // 6. 输入打招呼语
-            Locator input = inputLocator.first();
-            input.click();
-            Object tagObj = input.evaluate("el => el.tagName.toLowerCase()");
-            if (tagObj instanceof String && ((String) tagObj).equals("textarea")) {
-                input.fill(message);
-            } else {
-                // 对 contenteditable 节点写入文本并派发 input 事件
-                input.evaluate("(el, msg) => { el.innerText = msg; el.dispatchEvent(new Event('input')); }", message);
-            }
-
-            // 7. 点击发送按钮（div.send-message 或 button.btn-send）
-            Locator sendText = detailPage.locator("div.send-message, button[type='send'].btn-send, button.btn-send");
+            // 6. 打招呼语
+            // Boss 点【立即沟通】后会把账号里保存的打招呼语直接发给 HR（Boss 自带能力）。
+            // 我们再补一条，同一个 HR 就会收到两条一模一样的消息，所以默认不再自己发。
+            // 只有开启 AI 智能打招呼（按岗位定制文案）时，才由我们自己发送。
+            boolean customGreeting = !repeatChat && isValidString(aiMessage);
             boolean sendSuccess = false;
-            if (sendText.count() > 0) {
-                sendText.first().click();
-                PlaywrightUtil.sleep(1);
+            if (!customGreeting) {
+                log.info("使用 Boss 自带打招呼语，不再重复发送 | 公司：{} | 岗位：{}",
+                        job.getCompanyName(), job.getJobName());
                 sendSuccess = true;
+                // 等 Boss 把招呼语发出去，避免页面还没完成就被关掉
+                PlaywrightUtil.sleep(3);
             } else {
-                log.warn("未找到发送按钮，自动跳过！岗位：{}", job.getJobName());
+                Locator input = inputLocator.first();
+                input.click();
+                Object tagObj = input.evaluate("el => el.tagName.toLowerCase()");
+                boolean isTextarea = tagObj instanceof String && ((String) tagObj).equals("textarea");
+                input.fill(message);
+                if (!isTextarea) {
+                    input.evaluate("el => el.dispatchEvent(new Event('input'))");
+                }
+                Locator sendText = detailPage.locator("button[type='send'].btn-send, button.btn-send, div.send-message");
+                if (sendText.count() > 0) {
+                    sendText.first().click();
+                    PlaywrightUtil.sleep(3);
+                    sendSuccess = true;
+                } else {
+                    log.warn("未找到发送按钮，自动跳过！岗位：{}", job.getJobName());
+                }
             }
 
             // 8. 发送图片简历（可选）
@@ -1140,7 +1194,7 @@ public class Boss {
                 imgResume = sendImageResume(detailPage);
             }
 
-            log.info("投递完成 | 公司：{} | 岗位：{} | 薪资：{} | 招呼语：{} | 图片简历：{}", job.getCompanyName(), job.getJobName(), job.getSalary(), message, imgResume ? "已发送" : "未发送");
+            log.info("投递完成 | 公司：{} | 岗位：{} | 薪资：{} | 招呼语：{} | 图片简历：{}", job.getCompanyName(), job.getJobName(), job.getSalary(), customGreeting ? message : "Boss自带招呼语", imgResume ? "已发送" : "未发送");
 
             // 9. 关闭新打开的详情页
             try {

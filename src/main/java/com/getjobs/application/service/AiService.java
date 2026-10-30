@@ -71,6 +71,14 @@ public class AiService {
             message.put("content", content);
             messages.put(message);
             requestData.put("messages", messages);
+
+            // 本地/自建 Qwen3.x（vLLM）默认开启思考模式，会把推理过程混进 content，
+            // 导致生成的打招呼语夹杂英文推理。这里对 Qwen 模型显式关闭思考。
+            if (model != null && model.toLowerCase().contains("qwen")) {
+                JSONObject templateKwargs = new JSONObject();
+                templateKwargs.put("enable_thinking", false);
+                requestData.put("chat_template_kwargs", templateKwargs);
+            }
         }
 
         HttpRequest request = HttpRequest.newBuilder()

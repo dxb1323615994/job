@@ -32,11 +32,17 @@ public class StartupRunner implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) throws Exception {
-        String urlToOpen = determineUrlToOpen();
-        if (urlToOpen != null) {
-            openBrowser(urlToOpen);
+        // 是否自动打开管理页，默认 true；设 GETJOBS_OPEN_UI=false 可关闭（避免每次启动都弹浏览器）
+        String openUi = System.getenv("GETJOBS_OPEN_UI");
+        if (openUi != null && openUi.trim().equalsIgnoreCase("false")) {
+            log.info("GETJOBS_OPEN_UI=false，跳过自动打开管理页");
         } else {
-            log.info("未找到可用的管理页面，跳过自动打开浏览器");
+            String urlToOpen = determineUrlToOpen();
+            if (urlToOpen != null) {
+                openBrowser(urlToOpen);
+            } else {
+                log.info("未找到可用的管理页面，跳过自动打开浏览器");
+            }
         }
 
         // 在尝试打开管理页面之后，初始化 Playwright（满足“先打开管理页，再实例化”）

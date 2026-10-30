@@ -113,6 +113,56 @@ public class PlaywrightManager {
     // 持久化上下文的用户数据目录，登录态直接落在这里
     private static final Path USER_DATA_DIR = Paths.get(System.getProperty("user.dir"), "browser-data");
 
+    // 浏览器窗口显示模式，优先级：环境变量 GETJOBS_BROWSER_MODE > 系统属性 getjobs.browser.mode
+    //   offscreen（默认）：真实 headed 浏览器，但窗口移到屏幕外 —— 看不见，反检测特征不变
+    //   visible：正常显示窗口（需要扫码登录、处理验证码时用）
+    //   headless：无头模式，速度最快但最容易被风控（作者原注释：无头必被检测）
+    private static final String BROWSER_MODE = resolveBrowserMode();
+
+    private static String resolveBrowserMode() {
+        String mode = System.getenv("GETJOBS_BROWSER_MODE");
+        if (mode == null || mode.isBlank()) {
+            mode = System.getProperty("getjobs.browser.mode", "offscreen");
+        }
+        mode = mode.trim().toLowerCase(Locale.ROOT);
+        return switch (mode) {
+            case "visible", "headless" -> mode;
+            default -> "offscreen";
+        };
+    }
+
+    /** 组装 Chrome 启动参数（窗口模式相关参数按 BROWSER_MODE 动态生成）。 */
+    private static List<String> buildLaunchArgs() {
+        List<String> args = new ArrayList<>();
+        if ("offscreen".equals(BROWSER_MODE)) {
+            // 移到屏幕外 + 固定尺寸：用户看不到窗口，但仍是"有头"真浏览器，
+            // navigator.webdriver / 渲染行为与正常 Chrome 一致，不引入无头特征。
+            args.add("--window-position=-32000,-32000");
+            args.add("--window-size=1600,1000");
+        } else if ("visible".equals(BROWSER_MODE)) {
+            args.add("--start-maximized");
+        }
+        // Patchright 会加 --disable-blink-features=AutomationControlled，
+        // Chrome 因此弹"不受支持的命令行标记"黄条，用 --test-type 抑制
+        args.add("--test-type");
+        // 上次非正常退出（IDEA 停止按钮、崩溃、kill）后，Chrome 会弹
+        // "要恢复页面吗？"模态框。那个框会挂起所有 CDP 页面操作，
+        // 表现为 navigate 永远不返回、连超时都不触发，整个初始化焊死。
+        args.add("--disable-session-crashed-bubble");
+        args.add("--hide-crash-restore-bubble");
+        args.add("--no-first-run");
+        args.add("--no-default-browser-check");
+        // 强制直连，不走系统代理（代理出口 IP 更容易被风控标记）
+        args.add("--no-proxy-server");
+        args.add("--proxy-bypass-list=*");
+        // 把 navigator.webdriver 压成 false。
+        // patchright 的 driver 会自动加这个标志，但它的超时机制是坏的
+        // （navigate/isVisible/waitForLoadState 的 timeout 全部失效，
+        // 会把线程无限期挂死）；用官方 driver 就得自己加。
+        args.add("--disable-blink-features=AutomationControlled");
+        return args;
+    }
+
     // 平台URL常量
     private static final String BOSS_URL = "https://www.zhipin.com";
     // 初始化时打开的落地页。
@@ -305,31 +355,11 @@ public class PlaywrightManager {
             context = playwright.chromium().launchPersistentContext(USER_DATA_DIR,
                     new BrowserType.LaunchPersistentContextOptions()
                             .setChannel("chrome")   // 用本机真实 Chrome，而不是 Chromium
-                            .setHeadless(false)     // 无头必被检测
+                            .setHeadless("headless".equals(BROWSER_MODE)) // 无头易被检测，默认不走
                             .setSlowMo(50)          // 放慢操作速度，便于调试
                             .setViewportSize(null)  // 不锁视口，用窗口实际大小
                             .setChromiumSandbox(true) // 不加 --no-sandbox：它本身就是自动化特征
-                            .setArgs(List.of(
-                                    "--start-maximized",
-                                    // Patchright 会加 --disable-blink-features=AutomationControlled，
-                                    // Chrome 因此弹"不受支持的命令行标记"黄条，用 --test-type 抑制
-                                    "--test-type",
-                                    // 上次非正常退出（IDEA 停止按钮、崩溃、kill）后，Chrome 会弹
-                                    // "要恢复页面吗？"模态框。那个框会挂起所有 CDP 页面操作，
-                                    // 表现为 navigate 永远不返回、连超时都不触发，整个初始化焊死。
-                                    "--disable-session-crashed-bubble",
-                                    "--hide-crash-restore-bubble",
-                                    "--no-first-run",
-                                    "--no-default-browser-check",
-                                    // 强制直连，不走系统代理（代理出口 IP 更容易被风控标记）
-                                    "--no-proxy-server",
-                                    "--proxy-bypass-list=*",
-                                    // 把 navigator.webdriver 压成 false。
-                                    // patchright 的 driver 会自动加这个标志，但它的超时机制是坏的
-                                    // （navigate/isVisible/waitForLoadState 的 timeout 全部失效，
-                                    // 会把线程无限期挂死）；用官方 driver 就得自己加。
-                                    "--disable-blink-features=AutomationControlled"
-                            )));
+                            .setArgs(buildLaunchArgs()));
             // 刻意不设置 UserAgent：伪造 UA 只改字符串，改不了 navigator.platform 和
             // navigator.userAgentData，反而制造出"UA 说 Mac、platform 说 Win32"这种致命矛盾。
             browserClosed = false;
@@ -629,6 +659,38 @@ public class PlaywrightManager {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /**
+     * 取 Boss 页，必要时自愈。
+     * <p>
+     * 2026-10-30 实测：投递过程中打开/关闭大量详情页之后，缓存的 bossPage 会变成一个失效的
+     * frame 引用，此后任何 navigate 都抛 {@code Object doesn't exist: frame@...}，
+     * 复聊直接启动失败。这里先探活，坏了就重建一个（含登录状态监控）。
+     */
+    public synchronized Page getBossPageSafe() {
+        try {
+            if (bossPage != null && !bossPage.isClosed()) {
+                bossPage.url();
+                return bossPage;
+            }
+        } catch (Exception ignore) {
+            // 引用已失效，走重建
+        }
+        try {
+            if (bossPage != null) {
+                bossPage.close();
+            }
+        } catch (Exception ignore) {
+        }
+        bossPage = context.newPage();
+        bossPage.setDefaultTimeout(DEFAULT_TIMEOUT);
+        try {
+            setupLoginMonitoring(bossPage);
+        } catch (Exception ignore) {
+        }
+        log.warn("Boss Page 引用已失效，已重建");
+        return bossPage;
     }
 
     /**

@@ -332,6 +332,23 @@ public class BossService {
         // 将中文名转换为代码，供 Worker 使用
         // 城市：单值或列表，统一转换为代码列表
         config.setCityCode(toCodes("city", parseListString(entity.getCityCode())));
+
+        // 管理页的城市选择框是单选，额外城市从 config 表 BOSS_EXTRA_CITIES 读取后合并，
+        // 这样页面保存配置不会把多城市覆盖掉（在页面选的城市仍然排在最前面）。
+        try {
+            List<String> mergedCities = new java.util.ArrayList<>(config.getCityCode());
+            for (String extraCity : readExtraCities()) {
+                if (!mergedCities.contains(extraCity)) {
+                    mergedCities.add(extraCity);
+                }
+            }
+            if (mergedCities.size() > config.getCityCode().size()) {
+                log.info("已合并额外城市，最终城市代码列表: {}", mergedCities);
+            }
+            config.setCityCode(mergedCities);
+        } catch (Exception e) {
+            log.warn("合并额外城市失败，仅使用页面选择的城市: {}", e.getMessage());
+        }
         // 行业/经验/学历/规模/阶段：名称或代码 -> 统一为代码列表
         config.setIndustry(toCodes("industry", parseListString(entity.getIndustry())));
         config.setExperience(toCodes("experience", parseListString(entity.getExperience())));
@@ -370,6 +387,31 @@ public class BossService {
 
         log.info("已从 boss_config 加载Boss配置，并完成括号列表解析");
         return config;
+    }
+
+    /**
+     * 读取 config 表中的额外工作城市（键名 BOSS_EXTRA_CITIES，逗号或括号列表，填城市名称或代码）。
+     * 管理页城市框只能单选，额外城市通过这里补充，返回已转换为平台城市代码的列表。
+     */
+    private List<String> readExtraCities() {
+        String value = null;
+        try (Connection connection = dataSource.getConnection();
+             java.sql.PreparedStatement ps = connection.prepareStatement(
+                     "select config_value from config where config_key = ?")) {
+            ps.setString(1, "BOSS_EXTRA_CITIES");
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    value = rs.getString(1);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("读取 BOSS_EXTRA_CITIES 失败: {}", e.getMessage());
+            return java.util.Collections.emptyList();
+        }
+        if (value == null || value.trim().isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        return toCodes("city", parseListString(value));
     }
 
     /**

@@ -28,12 +28,23 @@ final class BossChatNavigator implements AutoCloseable {
     private final List<Page> popups = new ArrayList<>();
     private final Consumer<Page> popupListener = popups::add;
 
+    /**
+     * 上一次 open() 是否以「等待聊天页超时」告终。
+     * 调用方据此判断是撞了 Boss 的日沟通上限（连续多次超时）还是正常跳过。
+     */
+    private volatile boolean lastTimedOut = false;
+
+    boolean lastTimedOut() {
+        return lastTimedOut;
+    }
+
     BossChatNavigator(Page origin) {
         this.origin = origin;
         origin.onPopup(popupListener);
     }
 
     Chat open(Locator button, boolean repeat, boolean allowRepeat, Supplier<Boolean> stop, long timeoutMs) {
+        lastTimedOut = false;
         if (stop != null && Boolean.TRUE.equals(stop.get())) return null;
         if (repeat && !allowRepeat) return null;
         long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
@@ -97,6 +108,7 @@ final class BossChatNavigator implements AutoCloseable {
                 log.debug("等待聊天页时页面已切换：{}", navigationError.getMessage());
             }
         }
+        lastTimedOut = true;
         log.warn("等待聊天页超时，未发送消息；请检查是否存在未识别的弹框");
         return null;
     }
